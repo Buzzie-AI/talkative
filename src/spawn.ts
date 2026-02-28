@@ -30,6 +30,9 @@ export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
 
     if (skipPermissions) {
       args.push('--dangerously-skip-permissions');
+    } else {
+      // No tools for the Director — it must only produce text, never execute
+      args.push('--tools', '');
     }
 
     if (sessionId) {
