@@ -6,24 +6,35 @@ export interface RunClaudeOptions {
   systemPrompt: string;
   inputText: string;
   timeoutMs: number;
+  sessionId: string | null;   // null = first turn (new session)
   onChunk: (text: string) => void;
 }
 
-export function runClaude(opts: RunClaudeOptions): Promise<string> {
+export interface RunClaudeResult {
+  text: string;
+  sessionId: string;
+}
+
+export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
   return new Promise((resolve, reject) => {
-    const { claudePath, systemPrompt, inputText, timeoutMs, onChunk } = opts;
+    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, onChunk } = opts;
 
     const args = [
       '-p',
       '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
-      '--no-session-persistence',
-      '--system-prompt', systemPrompt,
     ];
 
+    if (sessionId) {
+      // Resume existing session — Claude maintains full history
+      args.push('--resume', sessionId);
+    } else {
+      // First turn — start fresh session with system prompt
+      args.push('--system-prompt', systemPrompt);
+    }
+
     const env: NodeJS.ProcessEnv = { ...process.env };
-    // Remove all env vars that Claude uses to detect/block nested sessions
     delete env['CLAUDECODE'];
     delete env['CLAUDE_CODE_ENTRYPOINT'];
     delete env['CLAUDE_CODE_SESSION_ID'];
@@ -36,6 +47,7 @@ export function runClaude(opts: RunClaudeOptions): Promise<string> {
 
     let fullText = '';
     let stderrBuf = '';
+    let capturedSessionId = sessionId ?? '';
     let settled = false;
     let lineBuffer = '';
 
@@ -65,7 +77,12 @@ export function runClaude(opts: RunClaudeOptions): Promise<string> {
           continue;
         }
 
-        // Events are wrapped: {"type":"stream_event","event":{"type":"content_block_delta",...}}
+        // Grab session ID from the init event on first turn
+        if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.session_id) {
+          capturedSessionId = parsed.session_id;
+        }
+
+        // Stream text chunks
         if (
           parsed.type === 'stream_event' &&
           parsed.event?.type === 'content_block_delta' &&
@@ -89,8 +106,10 @@ export function runClaude(opts: RunClaudeOptions): Promise<string> {
 
       if (code !== 0 && code !== null) {
         reject(new Error(`Claude exited with code ${code}. stderr: ${stderrBuf.slice(0, 500)}`));
+      } else if (!capturedSessionId) {
+        reject(new Error('No session ID received from Claude'));
       } else {
-        resolve(fullText.trim());
+        resolve({ text: fullText.trim(), sessionId: capturedSessionId });
       }
     });
 

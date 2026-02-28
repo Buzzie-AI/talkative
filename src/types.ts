@@ -17,11 +17,12 @@ export interface TurnResult {
 
 export interface StreamEvent {
   type: string;
+  subtype?: string;
+  session_id?: string;
   event?: {
     type: string;
     delta?: { type: string; text?: string };
   };
   result?: string;
-  subtype?: string;
   is_error?: boolean;
 }
