@@ -1,3 +1,8 @@
 node_modules/
 dist/
 *.sh
+.claude/
+_bmad/
+hello.txt
+test-project/
+todo-app/
