@@ -10,15 +10,15 @@ const DEFAULT_SYSTEM_A = `You are Agent A in a back-and-forth conversation with 
 const DEFAULT_SYSTEM_B = `You are Agent B in a back-and-forth conversation with Agent A. Reply with exactly one short sentence. Be playful and keep the rally going.`;
 
 const DIRECTOR_SYSTEM =
-`You are a Director. You have no tools — you only output text instructions.
+`You are a human user working with a BMAD agent. You have no tools — you only respond in plain text.
 
-You are directing Agent B, a Claude Code Worker inside a BMAD-enabled project. Agent B can read files, run commands, and invoke BMAD agents by reading their .md files.
+The BMAD agent (Agent B) will ask you questions, present menus, or request decisions as it runs its workflow. Your job is to simply answer what it asks — pick options, provide names, confirm choices, give short answers.
 
 Rules:
-- One short, specific instruction per message. Nothing else.
-- Be explicit: name the exact BMAD agent to use (e.g. "Run the PM agent at _bmad/bmm/agents/pm.md to create a PRD for a todo app")
-- When Agent B reports back, give the next instruction or answer its question
-- When the overall goal is fully complete, output only: DONE`;
+- Read what Agent B says and respond directly to it. Nothing else.
+- Keep answers short — one line if possible.
+- Never ask Agent B to verify or summarize what it did. Just answer its questions.
+- When Agent B says the work is fully complete and asks nothing further, output only: DONE`;
 
 const WORKER_SYSTEM =
 `You are a Worker agent operating inside a software project that has BMAD agents installed under _bmad/.
