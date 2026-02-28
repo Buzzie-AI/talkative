@@ -58,7 +58,15 @@ export async function runLoop(config: Config): Promise<void> {
     lastMessage = result.text;
 
     tui.setStatus(turn, agent, elapsedMs);
+
+    // Director signals completion with DONE — exit cleanly after a short pause
+    if (agent === 'A' && result.text.toUpperCase().includes('DONE')) {
+      tui.setStatus(completedTurns, 'done');
+      setTimeout(() => { tui.destroy(); process.exit(0); }, 3000);
+      return;
+    }
   }
 
   tui.setStatus(completedTurns, 'done');
+  setTimeout(() => { tui.destroy(); process.exit(0); }, 3000);
 }
