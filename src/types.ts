@@ -25,7 +25,14 @@ export interface StreamEvent {
   session_id?: string;
   event?: {
     type: string;
-    delta?: { type: string; text?: string };
+    delta?: { type: string; text?: string; partial_json?: string };
+    content_block?: { type: string; name?: string };
+  };
+  message?: {
+    content?: Array<{
+      type: string;
+      content?: string;
+    }>;
   };
   result?: string;
   is_error?: boolean;

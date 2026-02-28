@@ -92,15 +92,36 @@ export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
           capturedSessionId = parsed.session_id;
         }
 
-        // Stream text chunks
-        if (
-          parsed.type === 'stream_event' &&
-          parsed.event?.type === 'content_block_delta' &&
-          parsed.event.delta?.type === 'text_delta' &&
-          typeof parsed.event.delta.text === 'string'
-        ) {
-          fullText += parsed.event.delta.text;
-          onChunk(parsed.event.delta.text);
+        if (parsed.type === 'stream_event') {
+          const ev = parsed.event;
+          if (!ev) continue;
+
+          // Text response streaming
+          if (
+            ev.type === 'content_block_delta' &&
+            ev.delta?.type === 'text_delta' &&
+            typeof ev.delta.text === 'string'
+          ) {
+            fullText += ev.delta.text;
+            onChunk(ev.delta.text);
+          }
+
+          // Show tool name as it starts (gives live feedback during long tool calls)
+          if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
+            onChunk(`\n⚙ ${ev.content_block.name ?? 'tool'}…\n`);
+          }
+        }
+
+        // Tool result — show a one-line summary of what the tool returned
+        if (parsed.type === 'user' && Array.isArray(parsed.message?.content)) {
+          for (const block of parsed.message.content) {
+            if (block.type === 'tool_result') {
+              const preview = typeof block.content === 'string'
+                ? block.content.slice(0, 120).replace(/\n/g, ' ')
+                : '';
+              if (preview) onChunk(`  → ${preview}\n`);
+            }
+          }
         }
       }
     });
