@@ -5,6 +5,8 @@ export interface Config {
   turns: number;
   timeoutSecs: number;
   claudePath: string;
+  cwdA: string;
+  cwdB: string;
 }
 
 export interface TurnResult {

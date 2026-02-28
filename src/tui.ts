@@ -62,6 +62,12 @@ export function initTui(): void {
   screen.render();
 }
 
+export function setLabels(labelA: string, labelB: string): void {
+  boxA.setLabel(` ${labelA} `);
+  boxB.setLabel(` ${labelB} `);
+  screen.render();
+}
+
 export function appendA(text: string): void {
   contentA += text;
   boxA.setContent(contentA);

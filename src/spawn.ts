@@ -7,6 +7,7 @@ export interface RunClaudeOptions {
   inputText: string;
   timeoutMs: number;
   sessionId: string | null;   // null = first turn (new session)
+  cwd: string;
   onChunk: (text: string) => void;
 }
 
@@ -17,13 +18,14 @@ export interface RunClaudeResult {
 
 export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
   return new Promise((resolve, reject) => {
-    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, onChunk } = opts;
+    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, cwd, onChunk } = opts;
 
     const args = [
       '-p',
       '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
+      '--dangerously-skip-permissions',
     ];
 
     if (sessionId) {
@@ -42,6 +44,7 @@ export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
 
     const proc = spawnProc(claudePath, args, {
       env,
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

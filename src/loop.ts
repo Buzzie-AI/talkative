@@ -3,7 +3,7 @@ import { runClaude } from './spawn';
 import * as tui from './tui';
 
 export async function runLoop(config: Config): Promise<void> {
-  const { seed, systemA, systemB, turns, timeoutSecs, claudePath } = config;
+  const { seed, systemA, systemB, turns, timeoutSecs, claudePath, cwdA, cwdB } = config;
   const timeoutMs = timeoutSecs * 1000;
 
   let sessionIdA: string | null = null;
@@ -17,6 +17,7 @@ export async function runLoop(config: Config): Promise<void> {
     const agent: 'A' | 'B' = turn % 2 === 1 ? 'A' : 'B';
     const systemPrompt = agent === 'A' ? systemA : systemB;
     const sessionId = agent === 'A' ? sessionIdA : sessionIdB;
+    const cwd = agent === 'A' ? cwdA : cwdB;
     const append = agent === 'A' ? tui.appendA : tui.appendB;
 
     tui.setThinking(turn, agent);
@@ -31,6 +32,7 @@ export async function runLoop(config: Config): Promise<void> {
         inputText: lastMessage,
         timeoutMs,
         sessionId,
+        cwd,
         onChunk: append,
       });
     } catch (err: unknown) {
