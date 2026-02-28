@@ -8,6 +8,7 @@ export interface RunClaudeOptions {
   timeoutMs: number;
   sessionId: string | null;   // null = first turn (new session)
   cwd: string;
+  skipPermissions: boolean;
   onChunk: (text: string) => void;
 }
 
@@ -18,15 +19,18 @@ export interface RunClaudeResult {
 
 export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
   return new Promise((resolve, reject) => {
-    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, cwd, onChunk } = opts;
+    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, cwd, skipPermissions, onChunk } = opts;
 
     const args = [
       '-p',
       '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
-      '--dangerously-skip-permissions',
     ];
+
+    if (skipPermissions) {
+      args.push('--dangerously-skip-permissions');
+    }
 
     if (sessionId) {
       // Resume existing session — Claude maintains full history
@@ -108,9 +112,9 @@ export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
       settled = true;
 
       if (code !== 0 && code !== null) {
-        reject(new Error(`Claude exited with code ${code}. stderr: ${stderrBuf.slice(0, 500)}`));
+        reject(new Error(`Claude exited with code ${code}. stderr: ${stderrBuf.slice(0, 800)}`));
       } else if (!capturedSessionId) {
-        reject(new Error('No session ID received from Claude'));
+        reject(new Error(`No session ID received. stderr: ${stderrBuf.slice(0, 800)}`));
       } else {
         resolve({ text: fullText.trim(), sessionId: capturedSessionId });
       }

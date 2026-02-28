@@ -3,7 +3,7 @@ import { runClaude } from './spawn';
 import * as tui from './tui';
 
 export async function runLoop(config: Config): Promise<void> {
-  const { seed, systemA, systemB, turns, timeoutSecs, claudePath, cwdA, cwdB } = config;
+  const { seed, systemA, systemB, turns, timeoutSecs, claudePath, cwdA, cwdB, skipPermissionsA, skipPermissionsB } = config;
   const timeoutMs = timeoutSecs * 1000;
 
   let sessionIdA: string | null = null;
@@ -18,6 +18,7 @@ export async function runLoop(config: Config): Promise<void> {
     const systemPrompt = agent === 'A' ? systemA : systemB;
     const sessionId = agent === 'A' ? sessionIdA : sessionIdB;
     const cwd = agent === 'A' ? cwdA : cwdB;
+    const skipPermissions = agent === 'A' ? skipPermissionsA : skipPermissionsB;
     const append = agent === 'A' ? tui.appendA : tui.appendB;
 
     tui.setThinking(turn, agent);
@@ -33,6 +34,7 @@ export async function runLoop(config: Config): Promise<void> {
         timeoutMs,
         sessionId,
         cwd,
+        skipPermissions,
         onChunk: append,
       });
     } catch (err: unknown) {
@@ -46,6 +48,11 @@ export async function runLoop(config: Config): Promise<void> {
 
     const elapsedMs = Date.now() - turnStart;
     completedTurns = turn;
+
+    if (!result.text) {
+      tui.setError(`Turn ${turn} (Agent ${agent}): empty response received (session: ${result.sessionId})`);
+      return;
+    }
 
     append('\n\n---\n\n');
     lastMessage = result.text;

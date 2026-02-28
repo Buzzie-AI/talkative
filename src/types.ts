@@ -7,6 +7,8 @@ export interface Config {
   claudePath: string;
   cwdA: string;
   cwdB: string;
+  skipPermissionsA: boolean;
+  skipPermissionsB: boolean;
 }
 
 export interface TurnResult {

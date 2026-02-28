@@ -93,6 +93,8 @@ async function main(): Promise<void> {
     claudePath: opts.claudePath,
     cwdA,
     cwdB,
+    skipPermissionsA: false,
+    skipPermissionsB: opts.director ? true : false,
   };
 
   tui.initTui();
