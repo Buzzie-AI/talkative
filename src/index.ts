@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     .option('--director', 'Use Director/Worker mode (Agent A directs Agent B)')
     .option('--cwd-b <path>', 'Working directory for Agent B (used with --director)')
     .option('-t, --turns <number>', 'Max number of turns', '10')
-    .option('--timeout <seconds>', 'Per-turn timeout in seconds', '120')
+    .option('--timeout <seconds>', 'Per-turn timeout in seconds', '600')
     .option('--claude-path <path>', 'Path to claude CLI', resolveClaudePath())
     .parse(process.argv);
 
