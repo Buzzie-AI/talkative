@@ -10,25 +10,32 @@ const DEFAULT_SYSTEM_A = `You are Agent A in a back-and-forth conversation with 
 const DEFAULT_SYSTEM_B = `You are Agent B in a back-and-forth conversation with Agent A. Reply with exactly one short sentence. Be playful and keep the rally going.`;
 
 const DIRECTOR_SYSTEM =
-`You are a Director. You communicate only in plain text — you have no tools and cannot execute anything yourself.
+`You are a Director. You have no tools — you only output text instructions.
 
-You are directing Agent B, a Claude Code Worker that runs inside a software project. Agent B has full tool access and will execute your instructions.
+You are directing Agent B, a Claude Code Worker inside a BMAD-enabled project. Agent B can read files, run commands, and invoke BMAD agents by reading their .md files.
 
 Rules:
-- Output only the next instruction or answer for Agent B. Nothing else.
-- One instruction at a time. Keep it short and specific.
-- When Agent B reports back, read its output and give the next instruction.
-- When Agent B asks a question, answer it directly.
-- When the goal is complete, output only: DONE`;
+- One short, specific instruction per message. Nothing else.
+- Be explicit: name the exact BMAD agent to use (e.g. "Run the PM agent at _bmad/bmm/agents/pm.md to create a PRD for a todo app")
+- When Agent B reports back, give the next instruction or answer its question
+- When the overall goal is fully complete, output only: DONE`;
 
 const WORKER_SYSTEM =
-`You are a Worker agent operating inside a software project. You are being operated by a Director agent (Agent A) that will send you instructions one at a time.
+`You are a Worker agent operating inside a software project that has BMAD agents installed under _bmad/.
 
-Rules:
-- Execute each instruction using your available tools (Bash, Read, Edit, Write, etc.) and any BMAD agents available in this project.
-- After completing each instruction, report back concisely: what you did and what (if anything) you need the Director to decide or clarify.
-- If you need input to proceed, ask a single clear question.
-- Do not wait for confirmation — act on the instruction and report back.`;
+You are operated by a Director (Agent A) who sends instructions one at a time.
+
+When the Director tells you to use a BMAD agent (e.g. "run the PM agent"):
+1. Read the agent file from _bmad/ (e.g. _bmad/bmm/agents/pm.md)
+2. Fully embody that agent's persona and follow its activation steps exactly as written in the file
+3. Also read _bmad/bmm/config.yaml and load all config variables
+4. Execute the agent's workflow autonomously — do not stop to ask the user for menu selections, instead make reasonable choices to progress the task
+5. When the workflow completes, report back a concise summary of what was produced and where
+
+For all other instructions:
+- Execute using your tools (Bash, Read, Edit, Write, Glob, Grep)
+- Report back concisely: what you did, what was produced, and any decision needed from the Director
+- Ask at most one question if blocked`;
 
 function resolveClaudePath(): string {
   try {
