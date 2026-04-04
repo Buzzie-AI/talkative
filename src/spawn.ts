@@ -9,6 +9,7 @@ export interface RunClaudeOptions {
   sessionId: string | null;   // null = first turn (new session)
   cwd: string;
   skipPermissions: boolean;
+  noSessionPersistence?: boolean;
   onChunk: (text: string) => void;
 }
 
@@ -19,7 +20,7 @@ export interface RunClaudeResult {
 
 export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
   return new Promise((resolve, reject) => {
-    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, cwd, skipPermissions, onChunk } = opts;
+    const { claudePath, systemPrompt, inputText, timeoutMs, sessionId, cwd, skipPermissions, noSessionPersistence, onChunk } = opts;
 
     const args = [
       '-p',
@@ -35,11 +36,15 @@ export function runClaude(opts: RunClaudeOptions): Promise<RunClaudeResult> {
       args.push('--tools', '');
     }
 
-    if (sessionId) {
+    if (noSessionPersistence) {
+      args.push('--no-session-persistence');
+    }
+
+    if (sessionId && !noSessionPersistence) {
       // Resume existing session — Claude maintains full history
       args.push('--resume', sessionId);
     } else {
-      // First turn — start fresh session with system prompt
+      // First turn, or session persistence disabled — start fresh with system prompt
       args.push('--system-prompt', systemPrompt);
     }
 

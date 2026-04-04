@@ -93,7 +93,7 @@ export function setThinking(turn: number, agent: 'A' | 'B'): void {
 export function setStatus(turn: number, speaker: string, elapsedMs?: number): void {
   const elapsed = elapsedMs != null ? ` (${(elapsedMs / 1000).toFixed(1)}s)` : '';
   const text = speaker === 'done'
-    ? ` {green-fg}DONE{/green-fg} — completed ${turn} turn(s). Closing in 3 seconds...`
+    ? ` {green-fg}All tasks complete{/green-fg} — completed ${turn} turn(s). Closing in 3 seconds...`
     : ` Turn {bold}${turn}{/bold} | {green-fg}Agent ${speaker} responded${elapsed}{/green-fg} | Press {bold}q{/bold} to exit`;
   statusBar.setContent(text);
   screen.render();

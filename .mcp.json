@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "talkative-node": {
+      "command": "npx",
+      "args": ["tsx", "./channel/node.ts"],
+      "env": {
+        "TALKATIVE_RELAY_URL": "${TALKATIVE_RELAY_URL}"
+      }
+    }
+  }
+}

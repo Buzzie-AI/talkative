@@ -1,5 +1,6 @@
 node_modules/
 dist/
+director-workspace/
 *.sh
 .claude/
 _bmad/

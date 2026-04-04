@@ -8,19 +8,24 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "npx tsx test/role-check.ts",
+    "node-worker": "tsx channel/node.ts"
   },
   "author": "",
   "license": "ISC",
   "description": "Two Claude CLI instances talking to each other",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "blessed": "^0.1.81",
     "commander": "^12.0.0",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "ws": "^8.0.0"
   },
   "devDependencies": {
     "@types/blessed": "^0.1.25",
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

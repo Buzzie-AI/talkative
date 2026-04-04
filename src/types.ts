@@ -9,6 +9,7 @@ export interface Config {
   cwdB: string;
   skipPermissionsA: boolean;
   skipPermissionsB: boolean;
+  noSessionPersistenceA?: boolean;
 }
 
 export interface TurnResult {

@@ -3,11 +3,12 @@ import { runClaude } from './spawn';
 import * as tui from './tui';
 
 export async function runLoop(config: Config): Promise<void> {
-  const { seed, systemA, systemB, turns, timeoutSecs, claudePath, cwdA, cwdB, skipPermissionsA, skipPermissionsB } = config;
+  const { seed, systemA, systemB, turns, timeoutSecs, claudePath, cwdA, cwdB, skipPermissionsA, skipPermissionsB, noSessionPersistenceA } = config;
   const timeoutMs = timeoutSecs * 1000;
 
   let sessionIdA: string | null = null;
   let sessionIdB: string | null = null;
+
   let lastMessage = seed;
   let completedTurns = 0;
 
@@ -35,6 +36,7 @@ export async function runLoop(config: Config): Promise<void> {
         sessionId,
         cwd,
         skipPermissions,
+        noSessionPersistence: agent === 'A' ? noSessionPersistenceA : undefined,
         onChunk: append,
       });
     } catch (err: unknown) {

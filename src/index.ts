@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { execSync } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as tui from './tui';
 import { runLoop } from './loop';
@@ -37,6 +38,38 @@ For all other instructions:
 - Report back concisely: what you did, what was produced, and any decision needed from the Director
 - Ask at most one question if blocked`;
 
+const BUILDER_DIRECTOR_SYSTEM =
+`You are a non-technical product manager directing a software engineer (the Worker) to build something.
+
+You do not write code, commands, file names, or technical instructions of any kind. You speak only in plain business language about what you want — not how to build it.
+
+You have NO tools. You cannot read files, browse directories, or inspect anything on disk. You are completely blind to the codebase. You only know what the Worker tells you in plain English.
+
+Rules:
+- Break the goal into small, logical pieces. Give the Worker one piece at a time — do not share the full plan upfront.
+- Describe each piece as a desired outcome in plain English, as a PM would to an engineer.
+- Never mention code, files, directories, terminals, commands, servers, ports, curl, or any technical term.
+- NEVER read files, source code, or anything from disk. Do not say "I'll read X" or "let me check X". You are blind to the filesystem — act accordingly.
+- Never ask the Worker what to do next. You drive the conversation — you decide what comes next.
+- Never ask clarifying questions about requirements. You know what you want — just say it.
+- When the Worker asks you clarifying questions, answer them directly and fully.
+- Trust the Worker completely. If the Worker says something is done, it is done — never ask for proof, demos, or verification.
+- When the Worker completes a piece, move on to the next one without comment.
+- Only when every piece of the goal is accomplished, output exactly: DONE
+- Never output DONE mid-task. DONE means everything is finished and the session will close.`;
+
+const BUILDER_WORKER_SYSTEM =
+`You are a Worker agent. Your job is to build software exactly as directed.
+
+You have full tool access: Bash, Read, Write, Edit, Glob, Grep etc.
+
+Instructions:
+- Before writing any code, ask the Director clarifying questions to fully understand the requirements. Only start building once you have enough clarity.
+- Build what the Director asks, creating all files in your current working directory.
+- If a server or process needs to run, start it as a background process and verify it works.
+- If anything fails, fix it autonomously before reporting back.
+- When reporting back to the Director, give only a brief plain-English summary of what was accomplished — like a status update, not a technical report. Never mention file names, paths, tool outputs, code, commands, ports, or implementation details. The Director does not need to know how it was built, only that it is done.`;
+
 function resolveClaudePath(): string {
   try {
     return execSync('which claude', { encoding: 'utf8' }).trim();
@@ -55,6 +88,7 @@ async function main(): Promise<void> {
     .option('--system-a <prompt>', 'System prompt for Agent A', DEFAULT_SYSTEM_A)
     .option('--system-b <prompt>', 'System prompt for Agent B', DEFAULT_SYSTEM_B)
     .option('--director', 'Use Director/Worker mode (Agent A directs Agent B)')
+    .option('--builder', 'Use Builder mode: Director instructs Worker to build the app described by --seed')
     .option('--cwd-b <path>', 'Working directory for Agent B (used with --director)')
     .option('-t, --turns <number>', 'Max number of turns', '10')
     .option('--timeout <seconds>', 'Per-turn timeout in seconds', '600')
@@ -66,6 +100,7 @@ async function main(): Promise<void> {
     systemA: string;
     systemB: string;
     director: boolean;
+    builder: boolean;
     cwdB: string | undefined;
     turns: string;
     timeout: string;
@@ -84,12 +119,35 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // In director mode, override system prompts and default cwd-b to cwd
-  const cwdA = process.cwd();
-  const cwdB = opts.cwdB ? path.resolve(opts.cwdB) : process.cwd();
+  // In director/builder mode, override system prompts and default cwd-b to cwd
+  // Give Agent A an isolated blank workspace so it cannot discover project source
+  // files and its sessions don't accumulate alongside the talkative source project.
+  let cwdA = process.cwd();
+  if (opts.builder || opts.director) {
+    cwdA = path.resolve(__dirname, '..', 'director-workspace');
+    fs.mkdirSync(cwdA, { recursive: true });
+  }
 
-  const systemA = opts.director ? DIRECTOR_SYSTEM : opts.systemA;
-  const systemB = opts.director ? WORKER_SYSTEM   : opts.systemB;
+  // Builder mode: create a timestamped output folder and point cwdB at it
+  let builderOutputDir: string | undefined;
+  if (opts.builder) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const outputBase = path.resolve(__dirname, '..', 'output');
+    builderOutputDir = path.join(outputBase, `session-${timestamp}`);
+    fs.mkdirSync(builderOutputDir, { recursive: true });
+  }
+
+  const cwdB = opts.cwdB        ? path.resolve(opts.cwdB)
+             : builderOutputDir ? builderOutputDir
+             : process.cwd();
+
+  const systemA = opts.director ? DIRECTOR_SYSTEM
+                : opts.builder  ? BUILDER_DIRECTOR_SYSTEM
+                : opts.systemA;
+
+  const systemB = opts.director ? WORKER_SYSTEM
+                : opts.builder  ? `${BUILDER_WORKER_SYSTEM}\n\nYour working directory for this session is: ${cwdB}\nCreate ALL files inside this directory. Do not create files anywhere else.`
+                : opts.systemB;
 
   const config: Config = {
     seed: opts.seed,
@@ -101,14 +159,19 @@ async function main(): Promise<void> {
     cwdA,
     cwdB,
     skipPermissionsA: false,
-    skipPermissionsB: opts.director ? true : false,
+    skipPermissionsB: opts.director || opts.builder ? true : false,
+    noSessionPersistenceA: opts.director || opts.builder ? true : undefined,
   };
 
   tui.initTui();
 
-  // Update panel labels in director mode
+  // Update panel labels in director/builder mode
   if (opts.director) {
     tui.setLabels('Director', `Worker (${path.basename(cwdB)})`);
+  }
+  if (opts.builder) {
+    const folderName = builderOutputDir ? path.basename(builderOutputDir) : 'output';
+    tui.setLabels('Builder Director', `Builder Worker (${folderName})`);
   }
 
   process.on('SIGINT', () => {
