@@ -56,13 +56,7 @@ function connectRelay() {
 
   ws.on('open', () => {
     log('Connected to relay...');
-    // Register with handle and tool list
-    const manifest = scanManifest();
-    ws.send(JSON.stringify({
-      type: 'register',
-      handle,
-      tools: manifest.tools.map(t => t.name),
-    }));
+    ws.send(JSON.stringify({ type: 'register', handle }));
   });
 
   ws.on('message', async (data: Buffer) => {
@@ -214,8 +208,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     handle = h;
     // Re-register with relay
     if (ws.readyState === WebSocket.OPEN) {
-      const manifest = scanManifest();
-      ws.send(JSON.stringify({ type: 'register', handle: h, tools: manifest.tools.map(t => t.name) }));
+      ws.send(JSON.stringify({ type: 'register', handle: h }));
     }
     return { content: [{ type: 'text', text: `Handle set to ${h} for this session.` }] };
   }
@@ -235,9 +228,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (peers.length === 0) {
         return { content: [{ type: 'text', text: 'No peers online.' }] };
       }
-      const lines = peers.map((p: any) =>
-        `- ${p.handle} — tools: ${p.tools.length > 0 ? p.tools.join(', ') : 'none'}`
-      );
+      const lines = peers.map((p: any) => `- ${p.handle}`);
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (err: any) {
       return { content: [{ type: 'text', text: `Failed to get peers: ${err.message}` }] };

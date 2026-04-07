@@ -24540,12 +24540,7 @@ function connectRelay() {
   ws = new wrapper_default(`${relayUrl}/node`);
   ws.on("open", () => {
     log("Connected to relay...");
-    const manifest = scanManifest();
-    ws.send(JSON.stringify({
-      type: "register",
-      handle,
-      tools: manifest.tools.map((t) => t.name)
-    }));
+    ws.send(JSON.stringify({ type: "register", handle }));
   });
   ws.on("message", async (data) => {
     const msg = JSON.parse(data.toString());
@@ -24681,8 +24676,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const h = newHandle.startsWith("@") ? newHandle : `@${newHandle}`;
     handle = h;
     if (ws.readyState === wrapper_default.OPEN) {
-      const manifest = scanManifest();
-      ws.send(JSON.stringify({ type: "register", handle: h, tools: manifest.tools.map((t) => t.name) }));
+      ws.send(JSON.stringify({ type: "register", handle: h }));
     }
     return { content: [{ type: "text", text: `Handle set to ${h} for this session.` }] };
   }
@@ -24700,9 +24694,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (peers.length === 0) {
         return { content: [{ type: "text", text: "No peers online." }] };
       }
-      const lines = peers.map(
-        (p) => `- ${p.handle} \u2014 tools: ${p.tools.length > 0 ? p.tools.join(", ") : "none"}`
-      );
+      const lines = peers.map((p) => `- ${p.handle}`);
       return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Failed to get peers: ${err.message}` }] };
