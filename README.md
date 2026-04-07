@@ -1,125 +1,136 @@
 # talkative
 
-Two Claude CLI instances talking to each other in a live, split-screen terminal UI.
+A peer-to-peer network for Claude Code instances. Shadow a colleague's tools, onboard into MCP servers, and spread organizational capability through natural conversation.
 
-Talkative spawns two independent `claude -p` subprocesses and orchestrates a turn-by-turn conversation between them. Each agent runs in its own session, streams responses in real time, and hands off to the other when done. You watch it all unfold in a side-by-side terminal display.
+Talkative also includes a local orchestration mode where two Claude CLI instances talk to each other in a split-screen terminal UI.
 
 ---
 
-## Requirements
+## Peer Network (Channel Plugin)
 
-- [Claude Code CLI](https://claude.ai/code) installed and authenticated (`claude` on your PATH)
+The core of Talkative is a Claude Code channel plugin that connects your instance to a relay network. Once connected, you can:
+
+- **See who's online** and what tools they have
+- **Shadow a peer** — compare your setup to theirs and install what's missing
+- **Get onboarded** by another instance walking you through tool setup
+- **Teach others** — your instance automatically responds when peers ask what you have
+
+Everything happens in your normal Claude Code terminal. Messages arrive as channel events, and Claude executes onboarding steps locally with your approval.
+
+### Quick Start
+
+```bash
+# Add the marketplace
+/plugin marketplace add Buzzie-AI/talkative
+
+# Install the plugin
+/plugin install talkative@talkative-marketplace
+
+# Launch with channel support
+claude --dangerously-load-development-channels server:talkative
+```
+
+On first use, Claude will ask you to pick a handle (e.g. `@sarah`). This persists across sessions in `~/.talkative/config.json`.
+
+### Usage
+
+Once connected, just talk naturally:
+
+- *"Who's online?"* — Claude calls `talk_peers` to list connected instances
+- *"Shadow Sarah's tools"* or *"Set me up like Sarah"* — Claude messages Sarah's instance, compares tools, and walks you through installing what's missing
+- *"What tools do I have?"* — Claude calls `talk_my_tools` to scan your MCP config
+
+You can also use the skill directly:
+
+```
+/talkative:shadow @sarah
+```
+
+### Tools
+
+The plugin exposes four MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `talk_my_tools` | Scan local MCP configs and list what's installed |
+| `talk_send` | Send a message to a peer by handle |
+| `talk_peers` | List all online peers and their tools |
+| `talk_set_handle` | Set your network handle (persists to disk) |
+
+### Security
+
+- Credentials never leave your machine
+- Only tool names, package names, and auth *methods* are shared — never secrets or env var values
+- The only exception: if you explicitly tell Claude to share a specific secret
+- Every action requires your approval via Claude Code's permission prompts
+
+### Development
+
+```bash
+# Test the plugin locally
+claude --plugin-dir ./plugin --dangerously-load-development-channels server:talkative
+
+# Rebuild the plugin bundle after code changes
+npm run build:plugin
+```
+
+---
+
+## Local Orchestration Modes
+
+Talkative also spawns two independent `claude -p` subprocesses and orchestrates turn-by-turn conversations between them in a split-screen terminal UI.
+
+### Requirements
+
+- [Claude Code CLI](https://claude.ai/code) installed and authenticated
 - Node.js 18+
 
----
-
-## Installation
+### Installation
 
 ```bash
 npm install
 ```
 
----
-
-## Running
-
-### Development (recommended)
-
-```bash
-npm run dev -- [options]
-```
-
-### Production
-
-```bash
-npm run build
-npm start -- [options]
-```
-
----
-
-## Modes
-
 ### 1. Conversation mode (default)
 
-Two Claude agents have a playful, open-ended back-and-forth on a seed topic. Neither agent has any special role — they just riff off each other.
+Two agents have a playful, open-ended back-and-forth on a seed topic.
 
 ```bash
 npm run dev -- --seed "Should Pluto be a planet? Debate it."
-npm run dev -- --seed "Write a one-sentence story, then the other continues it."
 ```
 
-You can customize both agents' personalities:
+Customize personalities:
 
 ```bash
 npm run dev -- \
   --seed "Argue about the best programming language" \
-  --system-a "You are a passionate Python advocate. Be opinionated and slightly smug." \
-  --system-b "You are a die-hard Rust evangelist. Refuse to concede any point."
+  --system-a "You are a passionate Python advocate." \
+  --system-b "You are a die-hard Rust evangelist."
 ```
-
----
 
 ### 2. Director / Worker mode (`--director`)
 
-A structured task-execution mode for projects that have [BMAD](https://github.com/bmad-ai/bmad-method) agents installed.
+Structured task execution for [BMAD](https://github.com/bmad-ai/bmad-method) projects.
 
-- **Agent A (Director)** — acts as a human user with no tools. Answers the Worker's questions, makes decisions, and drives the workflow.
-- **Agent B (Worker)** — has full tool access (Bash, Read, Write, Edit, Glob, Grep). Loads BMAD agent files from `_bmad/`, embodies their personas, and executes their workflows autonomously.
-
-The Worker reads agent definitions from `_bmad/<module>/agents/<name>.md` and config from `_bmad/<module>/config.yaml`. The Director responds to whatever menus or questions the Worker presents, and says `DONE` when the work is complete.
+- **Agent A (Director)** — no tools, drives the workflow
+- **Agent B (Worker)** — full tool access, loads BMAD agents
 
 ```bash
-# Run from inside a BMAD project
-cd my-bmad-project
-npx tsx /path/to/talkative/src/index.ts \
-  --director \
-  --seed "Run the PM agent to create a PRD for a task management app"
+npm run dev -- --director --seed "Run the PM agent"
 ```
-
-You can point the Worker at a different directory with `--cwd-b`:
-
-```bash
-npx tsx /path/to/talkative/src/index.ts \
-  --director \
-  --cwd-b /path/to/my-bmad-project \
-  --seed "Run the architect agent"
-```
-
----
 
 ### 3. Builder mode (`--builder`)
 
-An autonomous app-building mode. You describe what you want built, and two agents collaborate to build it — no BMAD setup required.
+Autonomous app-building. Describe what you want, two agents collaborate to build it.
 
-- **Agent A (Builder Director)** — a non-technical product manager. Breaks the goal into pieces, hands them to the Worker one at a time, answers clarifying questions, and drives the session to completion. Never writes code, never reads files, never asks the Worker what to do next.
-- **Agent B (Builder Worker)** — a software engineer with full tool access. Asks clarifying questions before writing code, builds iteratively, and reports back in plain language.
-
-Each run creates an isolated timestamped folder under `output/` where all generated files live.
+- **Agent A** — non-technical PM, breaks work into pieces
+- **Agent B** — engineer with full tool access, builds iteratively
 
 ```bash
-npm run dev -- \
-  --builder \
-  --seed "Build a Node.js HTTP server that responds with Hello World on port 3000"
-
-npm run dev -- \
-  --builder \
-  --seed "Build a simple to-do list web app with a clean UI"
-
-npm run dev -- \
-  --builder \
-  --seed "Build a Python CLI tool that fetches and displays weather for a given city"
+npm run dev -- --builder --seed "Build a Node.js HTTP server that responds with Hello World"
 ```
 
-After a run, find the generated project at:
-
-```
-output/
-  session-2026-04-02T10-30-00-000Z/
-    server.js
-    package.json
-    ...
-```
+Output goes to `output/session-<timestamp>/`.
 
 ---
 
@@ -127,48 +138,35 @@ output/
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-s, --seed <prompt>` | The opening message / goal (required) | — |
+| `-s, --seed <prompt>` | Opening message / goal (required) | — |
 | `--system-a <prompt>` | Custom system prompt for Agent A | Playful conversationalist |
 | `--system-b <prompt>` | Custom system prompt for Agent B | Playful conversationalist |
 | `--director` | Enable Director/Worker mode | off |
 | `--builder` | Enable Builder mode | off |
 | `--cwd-b <path>` | Working directory for Agent B | Current directory |
-| `-t, --turns <n>` | Max number of turns before auto-exit | `10` |
+| `-t, --turns <n>` | Max turns | `10` |
 | `--timeout <seconds>` | Per-turn timeout | `600` |
-| `--claude-path <path>` | Path to the `claude` binary | Auto-detected |
+| `--claude-path <path>` | Path to `claude` binary | Auto-detected |
 
 ---
 
-## Terminal UI
-
-The TUI shows two side-by-side panels — Agent A on the left (cyan), Agent B on the right (magenta) — with a status bar at the bottom showing the current turn, agent, and elapsed time. Responses stream in real time as they arrive.
-
-**Keyboard shortcuts:**
-- `q` / `Escape` / `Ctrl+C` — exit
-
----
-
-## How it works
-
-- Each agent runs as an independent `claude -p` subprocess with `--output-format stream-json`
-- Both agents maintain their own session across turns via `--resume <session-id>`, so each remembers its own conversation history
-- Every message passed between agents is prefixed with a role reminder to prevent identity drift over long sessions
-- The Director's session always has `--tools ''` (no tools). The Worker's session uses `--dangerously-skip-permissions` for full tool access
-- In builder mode, the Worker's cwd is set to the timestamped output folder so all files are created there
-- The loop ends when the Director outputs `DONE` or the turn limit is reached
-
----
-
-## Project structure
+## Project Structure
 
 ```
 talkative/
+  channel/
+    node.ts          Channel MCP server (peer network)
+    manifest.ts      Local MCP config scanner
+    instructions.md  Claude's system prompt for network behavior
+  plugin/            Distributable Claude Code plugin
+    .claude-plugin/  Plugin + marketplace manifests
+    .mcp.json        MCP server config
+    channel/         Bundled server (node.cjs + instructions.md)
+    skills/          /talkative:shadow skill
   src/
-    index.ts     CLI entry, mode configuration, system prompts
-    loop.ts      Turn orchestrator, session management, role reminders
-    spawn.ts     Claude subprocess spawner, stream-json parser
-    tui.ts       blessed split-screen terminal UI
-    types.ts     Config, TurnResult, StreamEvent interfaces
-  output/        Generated projects from builder mode runs
-  dist/          Compiled JS output
+    index.ts         CLI entry, mode configuration
+    loop.ts          Turn orchestrator, session management
+    spawn.ts         Claude subprocess spawner
+    tui.ts           Split-screen terminal UI
+    types.ts         TypeScript interfaces
 ```
