@@ -24499,14 +24499,21 @@ function formatManifest(manifest) {
 // channel/node.ts
 var import_fs3 = require("fs");
 var import_meta = {};
-var logPath = (0, import_path2.join)((0, import_os2.homedir)(), ".talkative", "node.log");
-(0, import_fs2.mkdirSync)((0, import_path2.join)((0, import_os2.homedir)(), ".talkative"), { recursive: true });
-var logStream = (0, import_fs3.createWriteStream)(logPath, { flags: "a" });
+var logDir = (0, import_path2.join)((0, import_os2.homedir)(), ".talkative");
+var logPath = (0, import_path2.join)(logDir, "node.log");
+try {
+  (0, import_fs2.mkdirSync)(logDir, { recursive: true });
+} catch {
+}
+var _stderr = process.stderr.write.bind(process.stderr);
 var log = (msg) => {
   const line = `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
 `;
-  log(line);
-  logStream.write(line);
+  _stderr(line);
+  try {
+    (0, import_fs3.appendFileSync)(logPath, line);
+  } catch {
+  }
 };
 var rawUrl = process.env.TALKATIVE_RELAY_URL ?? "wss://talkative-relay.workers.dev";
 var relayUrl = rawUrl.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");

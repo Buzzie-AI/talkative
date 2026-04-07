@@ -9,14 +9,15 @@ import WebSocket from 'ws';
 import { scanManifest, formatManifest } from './manifest.js';
 
 // --- Logging ---
-import { createWriteStream } from 'fs';
-const logPath = join(homedir(), '.talkative', 'node.log');
-mkdirSync(join(homedir(), '.talkative'), { recursive: true });
-const logStream = createWriteStream(logPath, { flags: 'a' });
+import { appendFileSync } from 'fs';
+const logDir = join(homedir(), '.talkative');
+const logPath = join(logDir, 'node.log');
+try { mkdirSync(logDir, { recursive: true }); } catch {}
+const _stderr = process.stderr.write.bind(process.stderr);
 const log = (msg: string) => {
   const line = `${new Date().toISOString()} ${msg}\n`;
-  log(line);
-  logStream.write(line);
+  _stderr(line);
+  try { appendFileSync(logPath, line); } catch {}
 };
 
 // --- Config ---
