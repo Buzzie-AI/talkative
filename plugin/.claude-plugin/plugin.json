@@ -1,0 +1,11 @@
+{
+  "name": "talkative",
+  "description": "Peer-to-peer network for Claude Code instances. Shadow a colleague's tools, onboard into MCP servers, and spread organizational capability through natural conversation.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Arvind Naidu"
+  },
+  "homepage": "https://github.com/ArvindNaidu/talkative",
+  "repository": "https://github.com/ArvindNaidu/talkative",
+  "license": "MIT"
+}

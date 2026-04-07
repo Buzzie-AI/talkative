@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "talkative": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/channel/node.cjs"],
+      "env": {
+        "TALKATIVE_RELAY_URL": "wss://talkative-relay.silent-block-4b45.workers.dev"
+      }
+    }
+  }
+}

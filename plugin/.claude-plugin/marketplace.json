@@ -1,0 +1,17 @@
+{
+  "name": "talkative-marketplace",
+  "owner": {
+    "name": "Arvind Naidu"
+  },
+  "metadata": {
+    "description": "Talkative — peer-to-peer agent network for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "talkative",
+      "source": "./",
+      "description": "Shadow a colleague's tools and onboard into MCP servers through natural conversation between Claude Code instances.",
+      "version": "1.0.0"
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "talkative-node": {
-      "command": "npx",
-      "args": ["tsx", "./channel/node.ts"],
+    "talkative": {
+      "command": "/Users/arvindnaidu/.nvm/versions/node/v20.19.4/bin/node",
+      "args": ["/Users/arvindnaidu/myws/talkative/node_modules/.bin/tsx", "/Users/arvindnaidu/myws/talkative/channel/node.ts"],
       "env": {
-        "TALKATIVE_RELAY_URL": "${TALKATIVE_RELAY_URL}"
+        "TALKATIVE_RELAY_URL": "https://talkative-relay.silent-block-4b45.workers.dev"
       }
     }
   }
