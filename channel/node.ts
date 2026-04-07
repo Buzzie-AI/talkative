@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -8,19 +8,23 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import WebSocket from 'ws';
 import { scanManifest, formatManifest } from './manifest.js';
 
+// --- Logging ---
+import { createWriteStream } from 'fs';
+const logPath = join(homedir(), '.talkative', 'node.log');
+mkdirSync(join(homedir(), '.talkative'), { recursive: true });
+const logStream = createWriteStream(logPath, { flags: 'a' });
+const log = (msg: string) => {
+  const line = `${new Date().toISOString()} ${msg}\n`;
+  log(line);
+  logStream.write(line);
+};
+
 // --- Config ---
 const rawUrl = process.env.TALKATIVE_RELAY_URL ?? 'wss://talkative-relay.workers.dev';
 const relayUrl = rawUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
-// Handle: loaded from ~/.talkative/config.json, or temporary random until user sets one
-let handle: string;
-try {
-  const cfg = JSON.parse(readFileSync(join(homedir(), '.talkative', 'config.json'), 'utf8'));
-  handle = cfg.handle ?? `@${Math.random().toString(36).slice(2, 8)}`;
-} catch {
-  handle = `@${Math.random().toString(36).slice(2, 8)}`;
-}
-const needsHandle = !handle.startsWith('@') || handle.length <= 2;
+// Handle: CLI arg or random
+let handle = process.argv[2] ?? `@${Math.random().toString(36).slice(2, 8)}`;
 const __script_dir = typeof __dirname !== 'undefined' ? __dirname : dirname(new URL(import.meta.url).pathname);
 
 // Load instructions from markdown file
@@ -50,7 +54,7 @@ function connectRelay() {
   ws = new WebSocket(`${relayUrl}/node`);
 
   ws.on('open', () => {
-    process.stderr.write('Connected to relay...\n');
+    log('Connected to relay...');
     // Register with handle and tool list
     const manifest = scanManifest();
     ws.send(JSON.stringify({
@@ -69,7 +73,7 @@ function connectRelay() {
     }
 
     if (msg.type === 'registered') {
-      process.stderr.write(`Registered as ${handle} (node: ${msg.node_id})\nWaiting for messages...\n`);
+      log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
       return;
     }
 
@@ -83,20 +87,25 @@ function connectRelay() {
     }
 
     if (msg.type === 'message') {
-      process.stderr.write(`Message from ${msg.from_handle}: ${msg.text.slice(0, 80)}\n`);
+      log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
       // Push to Claude as a channel notification
-      await mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: msg.text,
-          meta: { from: msg.from_handle },
-        },
-      });
+      try {
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: msg.text,
+            meta: { from: msg.from_handle },
+          },
+        });
+        log('Channel notification sent to Claude Code');
+      } catch (err: any) {
+        log(`Channel notification FAILED: ${err.message}`);
+      }
       return;
     }
 
     if (msg.type === 'error') {
-      process.stderr.write(`Relay error: ${msg.text}\n`);
+      log(`Relay error: ${msg.text}`);
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -108,10 +117,23 @@ function connectRelay() {
     }
   });
 
-  ws.on('error', (err) => process.stderr.write(`WebSocket error: ${err.message}\n`));
-  ws.on('close', () => {
-    process.stderr.write('Disconnected from relay.\n');
-    // Reconnect after 5 seconds
+  ws.on('error', async (err) => {
+    log(`WebSocket error: ${err.message}`);
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: `Connection error: ${err.message}`, meta: { from: 'system' } },
+      });
+    } catch {}
+  });
+  ws.on('close', async () => {
+    log('Disconnected from relay.');
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: 'Disconnected from the Talkative relay. Reconnecting in 5 seconds...', meta: { from: 'system' } },
+      });
+    } catch {}
     setTimeout(connectRelay, 5000);
   });
 }
@@ -158,7 +180,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'talk_set_handle',
-      description: 'Set your handle on the Talkative network. Saves to ~/.talkative/config.json and re-registers with the relay.',
+      description: 'Set your handle on the Talkative network and re-register with the relay.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -189,16 +211,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const newHandle = (req.params.arguments as { handle: string }).handle;
     const h = newHandle.startsWith('@') ? newHandle : `@${newHandle}`;
     handle = h;
-    // Save to disk
-    const configDir = join(homedir(), '.talkative');
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ handle: h }, null, 2));
     // Re-register with relay
     if (ws.readyState === WebSocket.OPEN) {
       const manifest = scanManifest();
       ws.send(JSON.stringify({ type: 'register', handle: h, tools: manifest.tools.map(t => t.name) }));
     }
-    return { content: [{ type: 'text', text: `Handle set to ${h}. Saved to ~/.talkative/config.json.` }] };
+    return { content: [{ type: 'text', text: `Handle set to ${h} for this session.` }] };
   }
 
   if (name === 'talk_send') {

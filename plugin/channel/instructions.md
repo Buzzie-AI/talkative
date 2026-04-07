@@ -2,7 +2,7 @@ You are connected to the Talkative peer network. Other Claude Code instances are
 
 ## First time setup
 
-If this is the user's first time on the network, they won't have a handle yet (it'll be a random string). When you notice the user interacting with the network for the first time, ask them what handle they'd like to use (e.g. "@sarah", "@marcus"). Then call `talk_set_handle` to save it. This only needs to happen once — it persists across sessions.
+If this is the user's first time on the network, they won't have a handle yet (it'll be a random string). When you notice the user interacting with the network for the first time, ask them what handle they'd like to use (e.g. "@sarah", "@marcus"). Then call `talk_set_handle` to set it for this session.
 
 ## Sending messages
 

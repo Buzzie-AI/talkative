@@ -4314,11 +4314,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log = "error") {
+    function checkOptions(checkOpts, options, msg, log2 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log2](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -24497,17 +24497,20 @@ function formatManifest(manifest) {
 }
 
 // channel/node.ts
+var import_fs3 = require("fs");
 var import_meta = {};
+var logPath = (0, import_path2.join)((0, import_os2.homedir)(), ".talkative", "node.log");
+(0, import_fs2.mkdirSync)((0, import_path2.join)((0, import_os2.homedir)(), ".talkative"), { recursive: true });
+var logStream = (0, import_fs3.createWriteStream)(logPath, { flags: "a" });
+var log = (msg) => {
+  const line = `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
+`;
+  log(line);
+  logStream.write(line);
+};
 var rawUrl = process.env.TALKATIVE_RELAY_URL ?? "wss://talkative-relay.workers.dev";
 var relayUrl = rawUrl.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
-var handle;
-try {
-  const cfg = JSON.parse((0, import_fs2.readFileSync)((0, import_path2.join)((0, import_os2.homedir)(), ".talkative", "config.json"), "utf8"));
-  handle = cfg.handle ?? `@${Math.random().toString(36).slice(2, 8)}`;
-} catch {
-  handle = `@${Math.random().toString(36).slice(2, 8)}`;
-}
-var needsHandle = !handle.startsWith("@") || handle.length <= 2;
+var handle = process.argv[2] ?? `@${Math.random().toString(36).slice(2, 8)}`;
 var __script_dir = typeof __dirname !== "undefined" ? __dirname : (0, import_path2.dirname)(new URL(import_meta.url).pathname);
 var instructions;
 try {
@@ -24529,7 +24532,7 @@ var ws;
 function connectRelay() {
   ws = new wrapper_default(`${relayUrl}/node`);
   ws.on("open", () => {
-    process.stderr.write("Connected to relay...\n");
+    log("Connected to relay...");
     const manifest = scanManifest();
     ws.send(JSON.stringify({
       type: "register",
@@ -24544,9 +24547,7 @@ function connectRelay() {
       return;
     }
     if (msg.type === "registered") {
-      process.stderr.write(`Registered as ${handle} (node: ${msg.node_id})
-Waiting for messages...
-`);
+      log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
       return;
     }
     if (msg.type === "peers") {
@@ -24557,20 +24558,23 @@ Waiting for messages...
       return;
     }
     if (msg.type === "message") {
-      process.stderr.write(`Message from ${msg.from_handle}: ${msg.text.slice(0, 80)}
-`);
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: { from: msg.from_handle }
-        }
-      });
+      log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
+      try {
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: msg.text,
+            meta: { from: msg.from_handle }
+          }
+        });
+        log("Channel notification sent to Claude Code");
+      } catch (err) {
+        log(`Channel notification FAILED: ${err.message}`);
+      }
       return;
     }
     if (msg.type === "error") {
-      process.stderr.write(`Relay error: ${msg.text}
-`);
+      log(`Relay error: ${msg.text}`);
       await mcp.notification({
         method: "notifications/claude/channel",
         params: {
@@ -24581,10 +24585,25 @@ Waiting for messages...
       return;
     }
   });
-  ws.on("error", (err) => process.stderr.write(`WebSocket error: ${err.message}
-`));
-  ws.on("close", () => {
-    process.stderr.write("Disconnected from relay.\n");
+  ws.on("error", async (err) => {
+    log(`WebSocket error: ${err.message}`);
+    try {
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: { content: `Connection error: ${err.message}`, meta: { from: "system" } }
+      });
+    } catch {
+    }
+  });
+  ws.on("close", async () => {
+    log("Disconnected from relay.");
+    try {
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: { content: "Disconnected from the Talkative relay. Reconnecting in 5 seconds...", meta: { from: "system" } }
+      });
+    } catch {
+    }
     setTimeout(connectRelay, 5e3);
   });
 }
@@ -24626,7 +24645,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "talk_set_handle",
-      description: "Set your handle on the Talkative network. Saves to ~/.talkative/config.json and re-registers with the relay.",
+      description: "Set your handle on the Talkative network and re-register with the relay.",
       inputSchema: {
         type: "object",
         properties: {
@@ -24654,14 +24673,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const newHandle = req.params.arguments.handle;
     const h = newHandle.startsWith("@") ? newHandle : `@${newHandle}`;
     handle = h;
-    const configDir = (0, import_path2.join)((0, import_os2.homedir)(), ".talkative");
-    (0, import_fs2.mkdirSync)(configDir, { recursive: true });
-    (0, import_fs2.writeFileSync)((0, import_path2.join)(configDir, "config.json"), JSON.stringify({ handle: h }, null, 2));
     if (ws.readyState === wrapper_default.OPEN) {
       const manifest = scanManifest();
       ws.send(JSON.stringify({ type: "register", handle: h, tools: manifest.tools.map((t) => t.name) }));
     }
-    return { content: [{ type: "text", text: `Handle set to ${h}. Saved to ~/.talkative/config.json.` }] };
+    return { content: [{ type: "text", text: `Handle set to ${h} for this session.` }] };
   }
   if (name === "talk_send") {
     const { to, message } = req.params.arguments;
