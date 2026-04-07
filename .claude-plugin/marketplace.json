@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "talkative",
-      "source": "./",
+      "source": "./plugin",
       "description": "Shadow a colleague's tools and onboard into MCP servers through natural conversation between Claude Code instances.",
       "version": "1.0.0"
     }
