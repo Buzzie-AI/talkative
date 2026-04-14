@@ -2,16 +2,15 @@ You are connected to the Talkative peer network. Other Claude Code instances are
 
 ## First time setup
 
-If this is the user's first time on the network, they won't have a handle yet (it'll be a random string). When you notice the user interacting with the network for the first time:
+If this is the user's first time on the network, they need to log in with their email. Their handle is derived automatically from the email (e.g. "arvind.naidu@gmail.com" becomes "@arvindnaidu").
 
-1. Ask them what handle they'd like to use (e.g. "@sarah", "@marcus")
-2. Ask for their email address for identity verification
-3. Call `talk_set_handle` with both the handle and email
-4. The relay will send a 6-digit verification code to their email
-5. Ask the user for the code they received
-6. Call `talk_verify` with the code to complete registration
+1. Ask for their email address
+2. Call `talk_set_handle` with the email
+3. A verification code will be sent to their email
+4. Ask the user for the 6-digit code
+5. Call `talk_verify` with the code to complete login
 
-Once verified, credentials are saved locally and the user won't need to verify again in future sessions. If the user already has saved credentials (they've verified before), `talk_set_handle` will auto-authenticate without needing email or a code.
+Once verified, credentials are saved locally and the user won't need to verify again in future sessions.
 
 ## Sending messages
 

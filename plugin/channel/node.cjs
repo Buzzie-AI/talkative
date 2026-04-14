@@ -24722,14 +24722,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "talk_set_handle",
-      description: "Set your handle on the Talkative network. Requires email verification for new handles.",
+      description: "Log into the Talkative network with an email address. The handle is derived from the email (e.g. arvind.naidu@gmail.com becomes @arvindnaidu).",
       inputSchema: {
         type: "object",
         properties: {
-          handle: { type: "string", description: "The handle to use (e.g. @sarah)" },
-          email: { type: "string", description: "Email address for identity verification" }
+          email: { type: "string", description: "Email address for login and identity verification" }
         },
-        required: ["handle"]
+        required: ["email"]
       }
     },
     {
@@ -24760,17 +24759,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (name === "talk_set_handle") {
     const args = req.params.arguments;
-    const h = args.handle.startsWith("@") ? args.handle : `@${args.handle}`;
+    const email3 = args.email;
+    const h = `@${email3.split("@")[0].replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`;
     const auth = loadAuth();
     if (auth && auth.handle === h && auth.token) {
       handle = h;
       if (ws.readyState === wrapper_default.OPEN) {
         ws.send(JSON.stringify({ type: "register", handle: h, token: auth.token }));
       }
-      return { content: [{ type: "text", text: `Authenticated as ${h} using saved credentials.` }] };
-    }
-    if (!args.email) {
-      return { content: [{ type: "text", text: `Email is required to register handle ${h}. Please provide an email address for verification.` }] };
+      return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
     }
     handle = h;
     if (ws.readyState !== wrapper_default.OPEN) {
@@ -24779,7 +24776,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const result = await new Promise((resolve, reject) => {
         pendingRegisterResolve = resolve;
-        ws.send(JSON.stringify({ type: "register", handle: h, email: args.email }));
+        ws.send(JSON.stringify({ type: "register", handle: h, email: email3 }));
         setTimeout(() => {
           if (pendingRegisterResolve) {
             pendingRegisterResolve = null;
@@ -24796,9 +24793,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (result.status === "error") {
         return { content: [{ type: "text", text: result.text }] };
       }
-      return { content: [{ type: "text", text: `Handle set to ${h}.` }] };
+      return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
     } catch (err) {
-      return { content: [{ type: "text", text: `Failed to register: ${err.message}` }] };
+      return { content: [{ type: "text", text: `Failed to log in: ${err.message}` }] };
     }
   }
   if (name === "talk_verify") {

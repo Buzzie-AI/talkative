@@ -256,14 +256,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'talk_set_handle',
-      description: 'Set your handle on the Talkative network. Requires email verification for new handles.',
+      description: 'Log into the Talkative network with an email address. The handle is derived from the email (e.g. arvind.naidu@gmail.com becomes @arvindnaidu).',
       inputSchema: {
         type: 'object',
         properties: {
-          handle: { type: 'string', description: 'The handle to use (e.g. @sarah)' },
-          email: { type: 'string', description: 'Email address for identity verification' },
+          email: { type: 'string', description: 'Email address for login and identity verification' },
         },
-        required: ['handle'],
+        required: ['email'],
       },
     },
     {
@@ -296,8 +295,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === 'talk_set_handle') {
-    const args = req.params.arguments as { handle: string; email?: string };
-    const h = args.handle.startsWith('@') ? args.handle : `@${args.handle}`;
+    const args = req.params.arguments as { email: string };
+    const email = args.email;
+
+    // Derive handle from email: strip domain, remove special chars, prefix with @
+    const h = `@${email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}`;
 
     // Check if we already have a valid token for this handle
     const auth = loadAuth();
@@ -306,11 +308,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'register', handle: h, token: auth.token }));
       }
-      return { content: [{ type: 'text', text: `Authenticated as ${h} using saved credentials.` }] };
-    }
-
-    if (!args.email) {
-      return { content: [{ type: 'text', text: `Email is required to register handle ${h}. Please provide an email address for verification.` }] };
+      return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
     }
 
     handle = h;
@@ -321,7 +319,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const result = await new Promise<any>((resolve, reject) => {
         pendingRegisterResolve = resolve;
-        ws.send(JSON.stringify({ type: 'register', handle: h, email: args.email }));
+        ws.send(JSON.stringify({ type: 'register', handle: h, email }));
         setTimeout(() => {
           if (pendingRegisterResolve) {
             pendingRegisterResolve = null;
@@ -340,9 +338,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: result.text }] };
       }
 
-      return { content: [{ type: 'text', text: `Handle set to ${h}.` }] };
+      return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
     } catch (err: any) {
-      return { content: [{ type: 'text', text: `Failed to register: ${err.message}` }] };
+      return { content: [{ type: 'text', text: `Failed to log in: ${err.message}` }] };
     }
   }
 
