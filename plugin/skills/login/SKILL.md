@@ -7,9 +7,9 @@ description: Log into the Talkative peer network. Handles registration, email ve
 
 Help the user get onto the network:
 
-1. If they already have saved credentials, call `talk_set_handle` with just the handle — it will auto-authenticate.
-2. If they're new, ask for their email address. Call `talk_set_handle` with the email — the handle is derived automatically from the email (e.g. "arvind.naidu@gmail.com" becomes "@arvindnaidu").
-3. If a verification code is needed, ask the user to check their email and provide the 6-digit code. Call `talk_verify` with the code.
+1. If they already have saved credentials, call `talk_set_handle` with their email — it will auto-authenticate.
+2. If they're new, ask for their email address. Call `talk_set_handle` with the email — the handle is derived automatically (e.g. "arvind.naidu@gmail.com" becomes "@arvindnaidu").
+3. Tell the user to check their email and click the verification link. They'll be logged in automatically once they click it.
 
 If "$ARGUMENTS" is provided, treat it as their email (e.g. `/talkative:login arvind@example.com`).
 

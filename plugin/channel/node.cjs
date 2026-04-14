@@ -24595,10 +24595,14 @@ function connectRelay() {
       handle = pendingVerifyHandle ?? handle;
       saveAuth({ handle, token: msg.token });
       log(`Verified and registered as ${handle}`);
-      if (pendingVerifyResolve) {
-        pendingVerifyResolve({ status: "verified", handle });
-        pendingVerifyResolve = null;
-      }
+      pendingVerifyHandle = null;
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `Verified! You are now logged in as ${handle}.`,
+          meta: { from: "system" }
+        }
+      });
       return;
     }
     if (msg.type === "auth_failed") {
@@ -24732,17 +24736,6 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
-      name: "talk_verify",
-      description: "Submit the email verification code to complete handle registration.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code: { type: "string", description: "The 6-digit verification code from the email" }
-        },
-        required: ["code"]
-      }
-    },
-    {
       name: "talk_peers",
       description: "List all peers currently online on the Talkative network",
       inputSchema: { type: "object", properties: {}, required: [] }
@@ -24785,7 +24778,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }, 3e4);
       });
       if (result.status === "verify_required") {
-        return { content: [{ type: "text", text: `A verification code has been sent to ${result.emailHint}. Please provide the 6-digit code.` }] };
+        return { content: [{ type: "text", text: `Check your email at ${result.emailHint} and click the verification link to complete login.` }] };
       }
       if (result.status === "auth_required") {
         return { content: [{ type: "text", text: result.text }] };
@@ -24796,37 +24789,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Failed to log in: ${err.message}` }] };
-    }
-  }
-  if (name === "talk_verify") {
-    const { code } = req.params.arguments;
-    if (!pendingVerifyHandle) {
-      return { content: [{ type: "text", text: "No pending verification. Use talk_set_handle first." }] };
-    }
-    if (ws.readyState !== wrapper_default.OPEN) {
-      return { content: [{ type: "text", text: "Not connected to relay." }] };
-    }
-    try {
-      const result = await new Promise((resolve, reject) => {
-        pendingVerifyResolve = resolve;
-        ws.send(JSON.stringify({ type: "verify", handle: pendingVerifyHandle, code }));
-        setTimeout(() => {
-          if (pendingVerifyResolve) {
-            pendingVerifyResolve = null;
-            reject(new Error("Verification timed out"));
-          }
-        }, 3e4);
-      });
-      if (result.status === "verified") {
-        pendingVerifyHandle = null;
-        return { content: [{ type: "text", text: `Verified! You are now registered as ${result.handle}. Credentials saved for future sessions.` }] };
-      }
-      if (result.status === "error") {
-        return { content: [{ type: "text", text: result.text }] };
-      }
-      return { content: [{ type: "text", text: "Verification failed." }] };
-    } catch (err) {
-      return { content: [{ type: "text", text: `Verification failed: ${err.message}` }] };
     }
   }
   if (name === "talk_send") {

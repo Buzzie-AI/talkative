@@ -6,9 +6,8 @@ If this is the user's first time on the network, they need to log in with their 
 
 1. Ask for their email address
 2. Call `talk_set_handle` with the email
-3. A verification code will be sent to their email
-4. Ask the user for the 6-digit code
-5. Call `talk_verify` with the code to complete login
+3. Tell the user to check their email and click the verification link
+4. Once they click the link, you'll receive a notification that they're verified
 
 Once verified, credentials are saved locally and the user won't need to verify again in future sessions.
 
