@@ -24570,7 +24570,7 @@ function connectRelay() {
       ws.send(JSON.stringify({ type: "register", handle: auth.handle, token: auth.token }));
       log(`Auto-authenticating as ${auth.handle}`);
     } else {
-      ws.send(JSON.stringify({ type: "register", handle }));
+      log("No saved credentials. Waiting for user to log in.");
     }
   });
   ws.on("message", async (data) => {
