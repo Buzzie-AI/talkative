@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -20,12 +20,35 @@ const log = (msg: string) => {
   try { appendFileSync(logPath, line); } catch {}
 };
 
+// --- Auth token management ---
+const authPath = join(homedir(), '.talkative', 'auth.json');
+
+interface AuthData { handle: string; token: string; }
+
+function loadAuth(): AuthData | null {
+  try {
+    const data = JSON.parse(readFileSync(authPath, 'utf8'));
+    if (data.handle && data.token) return data as AuthData;
+  } catch {}
+  return null;
+}
+
+function saveAuth(data: AuthData) {
+  mkdirSync(dirname(authPath), { recursive: true });
+  writeFileSync(authPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+function clearAuth() {
+  try { unlinkSync(authPath); } catch {}
+}
+
 // --- Config ---
 const rawUrl = process.env.TALKATIVE_RELAY_URL ?? 'wss://talkative-relay.workers.dev';
 const relayUrl = rawUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
-// Handle: CLI arg or random
-let handle = process.argv[2] ?? `@${Math.random().toString(36).slice(2, 8)}`;
+// Handle: saved auth > CLI arg > random
+const savedAuth = loadAuth();
+let handle = savedAuth?.handle ?? process.argv[2] ?? `@${Math.random().toString(36).slice(2, 8)}`;
 const __script_dir = typeof __dirname !== 'undefined' ? __dirname : dirname(new URL(import.meta.url).pathname);
 
 // Load instructions from markdown file
@@ -48,6 +71,12 @@ const mcp = new Server(
   },
 );
 
+// --- Pending state for async tool calls ---
+let pendingPeersResolve: ((peers: any[]) => void) | null = null;
+let pendingRegisterResolve: ((result: any) => void) | null = null;
+let pendingVerifyResolve: ((result: any) => void) | null = null;
+let pendingVerifyHandle: string | null = null;
+
 // --- WebSocket to Relay ---
 let ws: WebSocket;
 
@@ -56,7 +85,14 @@ function connectRelay() {
 
   ws.on('open', () => {
     log('Connected to relay...');
-    ws.send(JSON.stringify({ type: 'register', handle }));
+    const auth = loadAuth();
+    if (auth) {
+      handle = auth.handle;
+      ws.send(JSON.stringify({ type: 'register', handle: auth.handle, token: auth.token }));
+      log(`Auto-authenticating as ${auth.handle}`);
+    } else {
+      ws.send(JSON.stringify({ type: 'register', handle }));
+    }
   });
 
   ws.on('message', async (data: Buffer) => {
@@ -72,8 +108,48 @@ function connectRelay() {
       return;
     }
 
+    if (msg.type === 'verify_required') {
+      pendingVerifyHandle = msg.handle ?? handle;
+      if (pendingRegisterResolve) {
+        pendingRegisterResolve({ status: 'verify_required', emailHint: msg.email_hint });
+        pendingRegisterResolve = null;
+      }
+      return;
+    }
+
+    if (msg.type === 'verified') {
+      handle = pendingVerifyHandle ?? handle;
+      saveAuth({ handle, token: msg.token });
+      log(`Verified and registered as ${handle}`);
+      if (pendingVerifyResolve) {
+        pendingVerifyResolve({ status: 'verified', handle });
+        pendingVerifyResolve = null;
+      }
+      return;
+    }
+
+    if (msg.type === 'auth_failed') {
+      log(`Auth failed: ${msg.reason}`);
+      clearAuth();
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: `Authentication failed: ${msg.reason}. Please re-verify with talk_set_handle.`,
+          meta: { from: 'system' },
+        },
+      });
+      return;
+    }
+
+    if (msg.type === 'auth_required') {
+      if (pendingRegisterResolve) {
+        pendingRegisterResolve({ status: 'auth_required', text: msg.text });
+        pendingRegisterResolve = null;
+      }
+      return;
+    }
+
     if (msg.type === 'peers') {
-      // Response to peers query — store for pending tool call
       if (pendingPeersResolve) {
         pendingPeersResolve(msg.peers);
         pendingPeersResolve = null;
@@ -83,7 +159,6 @@ function connectRelay() {
 
     if (msg.type === 'message') {
       log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
-      // Push to Claude as a channel notification
       try {
         await mcp.notification({
           method: 'notifications/claude/channel',
@@ -101,6 +176,14 @@ function connectRelay() {
 
     if (msg.type === 'error') {
       log(`Relay error: ${msg.text}`);
+      if (pendingRegisterResolve) {
+        pendingRegisterResolve({ status: 'error', text: msg.text });
+        pendingRegisterResolve = null;
+      }
+      if (pendingVerifyResolve) {
+        pendingVerifyResolve({ status: 'error', text: msg.text });
+        pendingVerifyResolve = null;
+      }
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -133,9 +216,7 @@ function connectRelay() {
   });
 }
 
-// --- Peers query mechanism ---
-let pendingPeersResolve: ((peers: any[]) => void) | null = null;
-
+// --- Peers query ---
 function requestPeers(): Promise<any[]> {
   return new Promise((resolve, reject) => {
     if (ws.readyState !== WebSocket.OPEN) {
@@ -175,13 +256,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'talk_set_handle',
-      description: 'Set your handle on the Talkative network and re-register with the relay.',
+      description: 'Set your handle on the Talkative network. Requires email verification for new handles.',
       inputSchema: {
         type: 'object',
         properties: {
           handle: { type: 'string', description: 'The handle to use (e.g. @sarah)' },
+          email: { type: 'string', description: 'Email address for identity verification' },
         },
         required: ['handle'],
+      },
+    },
+    {
+      name: 'talk_verify',
+      description: 'Submit the email verification code to complete handle registration.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'The 6-digit verification code from the email' },
+        },
+        required: ['code'],
       },
     },
     {
@@ -203,14 +296,89 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === 'talk_set_handle') {
-    const newHandle = (req.params.arguments as { handle: string }).handle;
-    const h = newHandle.startsWith('@') ? newHandle : `@${newHandle}`;
-    handle = h;
-    // Re-register with relay
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'register', handle: h }));
+    const args = req.params.arguments as { handle: string; email?: string };
+    const h = args.handle.startsWith('@') ? args.handle : `@${args.handle}`;
+
+    // Check if we already have a valid token for this handle
+    const auth = loadAuth();
+    if (auth && auth.handle === h && auth.token) {
+      handle = h;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'register', handle: h, token: auth.token }));
+      }
+      return { content: [{ type: 'text', text: `Authenticated as ${h} using saved credentials.` }] };
     }
-    return { content: [{ type: 'text', text: `Handle set to ${h} for this session.` }] };
+
+    if (!args.email) {
+      return { content: [{ type: 'text', text: `Email is required to register handle ${h}. Please provide an email address for verification.` }] };
+    }
+
+    handle = h;
+    if (ws.readyState !== WebSocket.OPEN) {
+      return { content: [{ type: 'text', text: 'Not connected to relay. Try again in a moment.' }] };
+    }
+
+    try {
+      const result = await new Promise<any>((resolve, reject) => {
+        pendingRegisterResolve = resolve;
+        ws.send(JSON.stringify({ type: 'register', handle: h, email: args.email }));
+        setTimeout(() => {
+          if (pendingRegisterResolve) {
+            pendingRegisterResolve = null;
+            reject(new Error('Registration timed out'));
+          }
+        }, 30_000);
+      });
+
+      if (result.status === 'verify_required') {
+        return { content: [{ type: 'text', text: `A verification code has been sent to ${result.emailHint}. Please provide the 6-digit code.` }] };
+      }
+      if (result.status === 'auth_required') {
+        return { content: [{ type: 'text', text: result.text }] };
+      }
+      if (result.status === 'error') {
+        return { content: [{ type: 'text', text: result.text }] };
+      }
+
+      return { content: [{ type: 'text', text: `Handle set to ${h}.` }] };
+    } catch (err: any) {
+      return { content: [{ type: 'text', text: `Failed to register: ${err.message}` }] };
+    }
+  }
+
+  if (name === 'talk_verify') {
+    const { code } = req.params.arguments as { code: string };
+    if (!pendingVerifyHandle) {
+      return { content: [{ type: 'text', text: 'No pending verification. Use talk_set_handle first.' }] };
+    }
+    if (ws.readyState !== WebSocket.OPEN) {
+      return { content: [{ type: 'text', text: 'Not connected to relay.' }] };
+    }
+
+    try {
+      const result = await new Promise<any>((resolve, reject) => {
+        pendingVerifyResolve = resolve;
+        ws.send(JSON.stringify({ type: 'verify', handle: pendingVerifyHandle, code }));
+        setTimeout(() => {
+          if (pendingVerifyResolve) {
+            pendingVerifyResolve = null;
+            reject(new Error('Verification timed out'));
+          }
+        }, 30_000);
+      });
+
+      if (result.status === 'verified') {
+        pendingVerifyHandle = null;
+        return { content: [{ type: 'text', text: `Verified! You are now registered as ${result.handle}. Credentials saved for future sessions.` }] };
+      }
+      if (result.status === 'error') {
+        return { content: [{ type: 'text', text: result.text }] };
+      }
+
+      return { content: [{ type: 'text', text: 'Verification failed.' }] };
+    } catch (err: any) {
+      return { content: [{ type: 'text', text: `Verification failed: ${err.message}` }] };
+    }
   }
 
   if (name === 'talk_send') {
