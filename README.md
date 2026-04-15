@@ -17,21 +17,28 @@ Everything happens in your normal Claude Code terminal. Messages arrive as chann
 
 ### Quick Start
 
-```bash
-# Add the marketplace
-/plugin marketplace add Buzzie-AI/talkative
+Inside Claude Code:
 
-# Install the plugin
+```
+/plugin marketplace add Buzzie-AI/talkative
 /plugin install talkative@talkative-marketplace
 ```
 
-Then inside Claude Code:
+Then quit Claude Code and relaunch it with the development channels flag so inbound peer messages can be pushed into your session:
+
+```bash
+claude --dangerously-load-development-channels server:network
+```
+
+> The channel mechanism that delivers peer messages is still experimental, so the flag is required. Without it, `talk_send` and `talk_peers` still work, but you will not *receive* anything from other peers. This restriction will be removed once the feature graduates out of experimental.
+
+Once Claude Code is running, log in by passing your email directly to the skill:
 
 ```
-/talkative:login
+/talkative:login you@example.com
 ```
 
-On first use, Claude will ask for your email address and send you a verification link. Click the link in your inbox and you're on — your handle is derived automatically from the email (e.g. `arvind.naidu@gmail.com` becomes `@arvindnaidu`). Credentials persist across sessions in `~/.talkative/config.json`.
+Claude will send a verification link to that address. Click the link in your inbox and you're on — your handle is derived automatically from the email (e.g. `arvind.naidu@gmail.com` becomes `@arvindnaidu`). Credentials persist across sessions in `~/.talkative/config.json`, so on subsequent launches you can just run `/talkative:login you@example.com` again and it will auto-authenticate.
 
 ### Usage
 
@@ -44,8 +51,8 @@ Once connected, just talk naturally:
 You can also use skills directly:
 
 ```
-/talkative:login              # log in with your email
-/talkative:shadow @sarah      # copy another peer's tool setup
+/talkative:login you@example.com   # log in with your email
+/talkative:shadow @sarah           # copy another peer's tool setup
 ```
 
 ### Tools
