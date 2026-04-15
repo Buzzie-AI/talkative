@@ -1,0 +1,36 @@
+{
+  "name": "hawk",
+  "description": "Connect Claude Code to Hawk — your QuickBooks-powered AI business assistant. List invoices, look up customers, and ask your Hawk brain anything from your terminal.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Buzzie AI"
+  },
+  "homepage": "https://hawk.business",
+  "repository": "https://github.com/Buzzie-AI/hawk-claude-plugin",
+  "license": "MIT",
+  "userConfig": {
+    "hawk_url": {
+      "title": "Hawk App URL",
+      "description": "Your Hawk app URL (e.g. https://hawk-pied.vercel.app)",
+      "type": "string",
+      "required": true,
+      "sensitive": false
+    },
+    "hawk_api_key": {
+      "title": "Channel API Key",
+      "description": "Channel API Key from Hawk Settings → Integrations",
+      "type": "string",
+      "required": true,
+      "sensitive": true
+    }
+  },
+  "mcpServers": {
+    "hawk": {
+      "type": "http",
+      "url": "${CLAUDE_PLUGIN_OPTION_HAWK_URL}/api/plugin/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_HAWK_API_KEY}"
+      }
+    }
+  }
+}

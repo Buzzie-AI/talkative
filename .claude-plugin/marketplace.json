@@ -4,13 +4,19 @@
     "name": "Arvind Naidu"
   },
   "metadata": {
-    "description": "Talkative — peer-to-peer agent network for Claude Code"
+    "description": "Buzzie AI plugins — Talkative peer network and Hawk business AI"
   },
   "plugins": [
     {
       "name": "talkative",
       "source": "./plugin",
       "description": "Shadow a colleague's tools and onboard into MCP servers through natural conversation between Claude Code instances.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "hawk",
+      "source": "./hawk-plugin",
+      "description": "Connect Claude Code to Hawk — QuickBooks-powered AI for invoices, customers, and business data.",
       "version": "1.0.0"
     }
   ]
