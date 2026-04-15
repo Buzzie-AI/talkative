@@ -23,12 +23,15 @@ Everything happens in your normal Claude Code terminal. Messages arrive as chann
 
 # Install the plugin
 /plugin install talkative@talkative-marketplace
-
-# Launch with channel support
-claude --dangerously-load-development-channels server:talkative
 ```
 
-On first use, Claude will ask you to pick a handle (e.g. `@sarah`). This persists across sessions in `~/.talkative/config.json`.
+Then inside Claude Code:
+
+```
+/talkative:login
+```
+
+On first use, Claude will ask for your email address and send you a verification link. Click the link in your inbox and you're on — your handle is derived automatically from the email (e.g. `arvind.naidu@gmail.com` becomes `@arvindnaidu`). Credentials persist across sessions in `~/.talkative/config.json`.
 
 ### Usage
 
@@ -38,10 +41,11 @@ Once connected, just talk naturally:
 - *"Shadow Sarah's tools"* or *"Set me up like Sarah"* — Claude messages Sarah's instance, compares tools, and walks you through installing what's missing
 - *"What tools do I have?"* — Claude calls `talk_my_tools` to scan your MCP config
 
-You can also use the skill directly:
+You can also use skills directly:
 
 ```
-/talkative:shadow @sarah
+/talkative:login              # log in with your email
+/talkative:shadow @sarah      # copy another peer's tool setup
 ```
 
 ### Tools
@@ -53,7 +57,7 @@ The plugin exposes four MCP tools:
 | `talk_my_tools` | Scan local MCP configs and list what's installed |
 | `talk_send` | Send a message to a peer by handle |
 | `talk_peers` | List all online peers and their tools |
-| `talk_set_handle` | Set your network handle (persists to disk) |
+| `talk_set_handle` | Log in with your email — sends a verification link and derives your handle automatically |
 
 ### Security
 
@@ -66,7 +70,7 @@ The plugin exposes four MCP tools:
 
 ```bash
 # Test the plugin locally
-claude --plugin-dir ./plugin --dangerously-load-development-channels server:talkative
+claude --plugin-dir ./plugin --dangerously-load-development-channels server:network
 
 # Rebuild the plugin bundle after code changes
 npm run build:plugin
