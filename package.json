@@ -10,6 +10,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "npx tsx test/role-check.ts",
+    "test:logout": "npx tsx test/logout.test.ts",
     "node-worker": "tsx channel/node.ts",
     "talk": "tsx channel/node.ts",
     "build:plugin": "esbuild channel/node.ts --bundle --platform=node --target=node18 --format=cjs --outfile=plugin/channel/node.cjs --external:bufferutil --external:utf-8-validate && cp channel/instructions.md plugin/channel/instructions.md"

@@ -21,7 +21,14 @@ const log = (msg: string) => {
 };
 
 // --- Auth token management ---
-const authPath = join(homedir(), '.talkative', 'auth.json');
+// Default: ~/.talkative/auth.json. Override with TALKATIVE_AUTH_PATH to isolate
+// identities per project (useful when running two Claude Code sessions as
+// different handles — set a different path in each project's .mcp.json env).
+const authPath = process.env.TALKATIVE_AUTH_PATH
+  ? (process.env.TALKATIVE_AUTH_PATH.startsWith('/')
+      ? process.env.TALKATIVE_AUTH_PATH
+      : join(process.cwd(), process.env.TALKATIVE_AUTH_PATH))
+  : join(homedir(), '.talkative', 'auth.json');
 
 interface AuthData { handle: string; token: string; }
 
@@ -44,9 +51,10 @@ function clearAuth() {
 
 // --- Config ---
 const rawUrl = process.env.TALKATIVE_RELAY_URL ?? 'wss://talkative-relay.workers.dev';
-const relayUrl = rawUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+const wsBase = rawUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+const httpBase = rawUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
 
-// Handle: saved auth > CLI arg > random
+// Handle: saved auth > CLI arg > random (random is only a placeholder until login)
 const savedAuth = loadAuth();
 let handle = savedAuth?.handle ?? process.argv[2] ?? `@${Math.random().toString(36).slice(2, 8)}`;
 const __script_dir = typeof __dirname !== 'undefined' ? __dirname : dirname(new URL(import.meta.url).pathname);
@@ -73,83 +81,64 @@ const mcp = new Server(
 
 // --- Pending state for async tool calls ---
 let pendingPeersResolve: ((peers: any[]) => void) | null = null;
-let pendingRegisterResolve: ((result: any) => void) | null = null;
-let pendingVerifyResolve: ((result: any) => void) | null = null;
-let pendingVerifyHandle: string | null = null;
 
 // --- WebSocket to Relay ---
-let ws: WebSocket;
+let ws: WebSocket | null = null;
+let intentionalClose = false;
 
 function connectRelay() {
-  ws = new WebSocket(`${relayUrl}/node`);
+  const auth = loadAuth();
+  if (!auth) {
+    log('No saved credentials. Waiting for user to log in with talk_set_handle.');
+    return;
+  }
+  handle = auth.handle;
+  const url = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}`;
+  const sock = new WebSocket(url);
+  ws = sock;
 
-  ws.on('open', () => {
-    log('Connected to relay...');
-    const auth = loadAuth();
-    if (auth) {
-      handle = auth.handle;
-      ws.send(JSON.stringify({ type: 'register', handle: auth.handle, token: auth.token }));
-      log(`Auto-authenticating as ${auth.handle}`);
+  let authRejected = false;
+
+  sock.on('unexpected-response', async (_req, res) => {
+    if (res.statusCode === 401) {
+      authRejected = true;
+      log('Relay rejected stored credentials (401). Clearing auth.');
+      clearAuth();
+      try {
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: 'Saved Talkative login is invalid. Run talk_set_handle with your email to re-authenticate.',
+            meta: { from: 'system' },
+          },
+        });
+      } catch {}
     } else {
-      log('No saved credentials. Waiting for user to log in.');
+      log(`Relay upgrade failed: status=${res.statusCode}`);
     }
   });
 
-  ws.on('message', async (data: Buffer) => {
+  sock.on('open', () => {
+    log(`Connected to relay as ${handle}`);
+  });
+
+  sock.on('message', async (data: Buffer) => {
     const msg = JSON.parse(data.toString());
 
     if (msg.type === 'ping') {
-      ws.send(JSON.stringify({ type: 'pong' }));
+      sock.send(JSON.stringify({ type: 'pong' }));
       return;
     }
 
     if (msg.type === 'registered') {
       log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
-      return;
-    }
-
-    if (msg.type === 'verify_required') {
-      pendingVerifyHandle = msg.handle ?? handle;
-      if (pendingRegisterResolve) {
-        pendingRegisterResolve({ status: 'verify_required', emailHint: msg.email_hint });
-        pendingRegisterResolve = null;
-      }
-      return;
-    }
-
-    if (msg.type === 'verified') {
-      handle = pendingVerifyHandle ?? handle;
-      saveAuth({ handle, token: msg.token });
-      log(`Verified and registered as ${handle}`);
-      pendingVerifyHandle = null;
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: `Verified! You are now logged in as ${handle}.`,
+          content: `Welcome to the Talkative network! You're connected as ${handle}.`,
           meta: { from: 'system' },
         },
       });
-      return;
-    }
-
-    if (msg.type === 'auth_failed') {
-      log(`Auth failed: ${msg.reason}`);
-      clearAuth();
-      await mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: `Authentication failed: ${msg.reason}. Please re-verify with talk_set_handle.`,
-          meta: { from: 'system' },
-        },
-      });
-      return;
-    }
-
-    if (msg.type === 'auth_required') {
-      if (pendingRegisterResolve) {
-        pendingRegisterResolve({ status: 'auth_required', text: msg.text });
-        pendingRegisterResolve = null;
-      }
       return;
     }
 
@@ -180,14 +169,6 @@ function connectRelay() {
 
     if (msg.type === 'error') {
       log(`Relay error: ${msg.text}`);
-      if (pendingRegisterResolve) {
-        pendingRegisterResolve({ status: 'error', text: msg.text });
-        pendingRegisterResolve = null;
-      }
-      if (pendingVerifyResolve) {
-        pendingVerifyResolve({ status: 'error', text: msg.text });
-        pendingVerifyResolve = null;
-      }
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -199,17 +180,18 @@ function connectRelay() {
     }
   });
 
-  ws.on('error', async (err) => {
+  sock.on('error', async (err) => {
     log(`WebSocket error: ${err.message}`);
-    try {
-      await mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: `Connection error: ${err.message}`, meta: { from: 'system' } },
-      });
-    } catch {}
   });
-  ws.on('close', async () => {
+
+  sock.on('close', async () => {
     log('Disconnected from relay.');
+    ws = null;
+    if (authRejected || intentionalClose) {
+      // Either credentials were bad or the user asked to log out — do not reconnect.
+      intentionalClose = false;
+      return;
+    }
     try {
       await mcp.notification({
         method: 'notifications/claude/channel',
@@ -220,10 +202,99 @@ function connectRelay() {
   });
 }
 
+async function revokeTokenOnServer(auth: AuthData): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const resp = await fetch(`${httpBase}/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle: auth.handle, token: auth.token }),
+    });
+    if (resp.ok) return { ok: true };
+    const data = await resp.json().catch(() => ({})) as { error?: string };
+    return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function closeLocalSession() {
+  intentionalClose = true;
+  if (ws) {
+    try { ws.close(1000, 'logout'); } catch {}
+    ws = null;
+  }
+  clearAuth();
+}
+
+// --- HTTP signup flow ---
+
+async function beginLogin(email: string, h: string): Promise<{ ok: true; pendingId: string; emailHint: string } | { ok: false; error: string }> {
+  try {
+    const resp = await fetch(`${httpBase}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, handle: h }),
+    });
+    const data = await resp.json() as { pending_id?: string; email_hint?: string; error?: string };
+    if (!resp.ok || !data.pending_id) {
+      return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
+    }
+    return { ok: true, pendingId: data.pending_id, emailHint: data.email_hint ?? email };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function pollLoginStatus(pendingId: string) {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const resp = await fetch(`${httpBase}/login-status?pending_id=${encodeURIComponent(pendingId)}`);
+      if (resp.status === 404 || resp.status === 410) {
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: 'Login verification expired before you clicked the email link. Run talk_set_handle again to retry.',
+            meta: { from: 'system' },
+          },
+        });
+        return;
+      }
+      if (!resp.ok) continue;
+      const data = await resp.json() as { status: string; handle?: string; token?: string };
+      if (data.status === 'pending') continue;
+      if (data.status === 'verified' && data.token && data.handle) {
+        saveAuth({ handle: data.handle, token: data.token });
+        handle = data.handle;
+        log(`Verified and logged in as ${data.handle}`);
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: `Verified! You are now logged in as ${data.handle}.`,
+            meta: { from: 'system' },
+          },
+        });
+        connectRelay();
+        return;
+      }
+    } catch (err: any) {
+      log(`login-status poll error: ${err.message}`);
+    }
+  }
+  await mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: 'Login verification timed out. Run talk_set_handle again to retry.',
+      meta: { from: 'system' },
+    },
+  });
+}
+
 // --- Peers query ---
 function requestPeers(): Promise<any[]> {
   return new Promise((resolve, reject) => {
-    if (ws.readyState !== WebSocket.OPEN) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error('Not connected to relay'));
       return;
     }
@@ -274,6 +345,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: 'List all peers currently online on the Talkative network',
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
+    {
+      name: 'talk_logout',
+      description: 'Log out of the Talkative network and revoke the auth token on the server. After this, the token is dead on every machine — you must re-verify via email with talk_set_handle to log back in.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'talk_logout_local',
+      description: 'Log out on this machine only. Closes the local connection and forgets saved credentials, but the token remains valid on the server. Use this to switch machines without revoking access elsewhere.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
   ],
 }));
 
@@ -294,53 +375,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     // Derive handle from email: strip domain, remove special chars, prefix with @
     const h = `@${email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}`;
 
-    // Check if we already have a valid token for this handle
-    const auth = loadAuth();
-    if (auth && auth.handle === h && auth.token) {
+    // Already have a valid token for this handle? Just (re)connect.
+    const existing = loadAuth();
+    if (existing && existing.handle === h && existing.token) {
       handle = h;
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'register', handle: h, token: auth.token }));
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connectRelay();
       }
       return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
     }
 
-    handle = h;
-    if (ws.readyState !== WebSocket.OPEN) {
-      return { content: [{ type: 'text', text: 'Not connected to relay. Try again in a moment.' }] };
+    // New signup: HTTP /login, then poll /login-status in the background.
+    const result = await beginLogin(email, h);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: `Failed to start login: ${result.error}` }] };
     }
-
-    try {
-      const result = await new Promise<any>((resolve, reject) => {
-        pendingRegisterResolve = resolve;
-        ws.send(JSON.stringify({ type: 'register', handle: h, email }));
-        setTimeout(() => {
-          if (pendingRegisterResolve) {
-            pendingRegisterResolve = null;
-            reject(new Error('Registration timed out'));
-          }
-        }, 30_000);
-      });
-
-      if (result.status === 'verify_required') {
-        return { content: [{ type: 'text', text: `Check your email at ${result.emailHint} and click the verification link to complete login.` }] };
-      }
-      if (result.status === 'auth_required') {
-        return { content: [{ type: 'text', text: result.text }] };
-      }
-      if (result.status === 'error') {
-        return { content: [{ type: 'text', text: result.text }] };
-      }
-
-      return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
-    } catch (err: any) {
-      return { content: [{ type: 'text', text: `Failed to log in: ${err.message}` }] };
-    }
+    pollLoginStatus(result.pendingId).catch((err) => log(`login poll crashed: ${err.message}`));
+    return {
+      content: [{
+        type: 'text',
+        text: `Check your email at ${result.emailHint} and click the verification link to complete login.`,
+      }],
+    };
   }
 
   if (name === 'talk_send') {
     const { to, message } = req.params.arguments as { to: string; message: string };
-    if (ws.readyState !== WebSocket.OPEN) {
-      return { content: [{ type: 'text', text: 'Not connected to relay. Try again in a moment.' }] };
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { content: [{ type: 'text', text: 'Not connected to relay. Run talk_set_handle to log in.' }] };
     }
     ws.send(JSON.stringify({ type: 'message', to, text: message, from_handle: handle }));
     return { content: [{ type: 'text', text: `Message sent to ${to}.` }] };
@@ -357,6 +419,43 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     } catch (err: any) {
       return { content: [{ type: 'text', text: `Failed to get peers: ${err.message}` }] };
     }
+  }
+
+  if (name === 'talk_logout') {
+    const auth = loadAuth();
+    if (!auth) {
+      return { content: [{ type: 'text', text: 'Not logged in.' }] };
+    }
+    const result = await revokeTokenOnServer(auth);
+    closeLocalSession();
+    if (!result.ok) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Local credentials cleared, but the server-side revoke call failed: ${result.error}. The token may still be valid elsewhere — retry talk_logout once you're online.`,
+        }],
+      };
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: `Logged out as ${auth.handle}. The token has been revoked and is no longer valid on any machine. Run talk_set_handle to log in again.`,
+      }],
+    };
+  }
+
+  if (name === 'talk_logout_local') {
+    const auth = loadAuth();
+    if (!auth) {
+      return { content: [{ type: 'text', text: 'Not logged in on this machine.' }] };
+    }
+    closeLocalSession();
+    return {
+      content: [{
+        type: 'text',
+        text: `Logged out of ${auth.handle} on this machine. The token is still valid on the server — use talk_logout instead if you want to revoke it everywhere.`,
+      }],
+    };
   }
 
   throw new Error(`Unknown tool: ${name}`);
