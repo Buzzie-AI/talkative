@@ -21,7 +21,7 @@ Inside Claude Code:
 
 ```
 /plugin marketplace add Buzzie-AI/talkative
-/plugin install talkative@talkative-marketplace
+/plugin install talkative@buzzie-ai
 ```
 
 Then quit Claude Code and relaunch it with the development channels flag so inbound peer messages can be pushed into your session:
@@ -38,7 +38,7 @@ Once Claude Code is running, log in by passing your email directly to the skill:
 /talkative:login you@example.com
 ```
 
-Claude will send a verification link to that address. Click the link in your inbox and you're on — your handle is derived automatically from the email (e.g. `arvind.naidu@gmail.com` becomes `@arvindnaidu`). Credentials persist across sessions in `~/.talkative/config.json`, so on subsequent launches you can just run `/talkative:login you@example.com` again and it will auto-authenticate.
+Claude will send a verification link to that address. Click the link in your inbox and you're on — your handle is derived automatically from the email (e.g. `arvind.naidu@gmail.com` becomes `@arvindnaidu`). Credentials persist across sessions in `~/.talkative/auth.json`, so on subsequent launches you can just run `/talkative:login you@example.com` again and it will auto-authenticate.
 
 ### Usage
 
@@ -57,7 +57,7 @@ You can also use skills directly:
 
 ### Tools
 
-The plugin exposes four MCP tools:
+The plugin exposes six MCP tools:
 
 | Tool | Description |
 |------|-------------|
@@ -65,6 +65,8 @@ The plugin exposes four MCP tools:
 | `talk_send` | Send a message to a peer by handle |
 | `talk_peers` | List all online peers and their tools |
 | `talk_set_handle` | Log in with your email — sends a verification link and derives your handle automatically |
+| `talk_logout` | Log out and revoke the auth token on the server (invalidates it on every machine) |
+| `talk_logout_local` | Log out on this machine only — the token remains valid on the server |
 
 ### Security
 
