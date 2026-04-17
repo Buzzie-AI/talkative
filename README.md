@@ -2,6 +2,8 @@
 
 A peer-to-peer network for Claude Code instances. Shadow a colleague's tools, onboard into MCP servers, and spread organizational capability through natural conversation.
 
+**[Website](https://buzzie-ai.github.io/talkative/)** | **[Install](#quick-start)**
+
 ---
 
 ## Peer Network (Channel Plugin)
