@@ -24560,108 +24560,132 @@ var pendingPeersResolve = null;
 var ws = null;
 var intentionalClose = false;
 function connectRelay() {
-  const auth = loadAuth();
-  if (!auth) {
-    log("No saved credentials. Waiting for user to log in with talk_set_handle.");
-    return;
-  }
-  handle = auth.handle;
-  const url2 = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}`;
-  const sock = new wrapper_default(url2);
-  ws = sock;
-  let authRejected = false;
-  sock.on("unexpected-response", async (_req, res) => {
-    if (res.statusCode === 401) {
-      authRejected = true;
-      log("Relay rejected stored credentials (401). Clearing auth.");
-      clearAuth();
-      try {
+  return new Promise((resolve) => {
+    const auth = loadAuth();
+    if (!auth) {
+      log("No saved credentials. Waiting for user to log in with talk_set_handle.");
+      resolve(false);
+      return;
+    }
+    handle = auth.handle;
+    const url2 = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}`;
+    const sock = new wrapper_default(url2);
+    ws = sock;
+    let authRejected = false;
+    let settled = false;
+    sock.on("unexpected-response", async (_req, res) => {
+      if (res.statusCode === 401) {
+        authRejected = true;
+        log("Relay rejected stored credentials (401). Clearing auth.");
+        clearAuth();
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+        try {
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: "Saved Talkative login is invalid. Run talk_set_handle with your email to re-authenticate.",
+              meta: { from: "system" }
+            }
+          });
+        } catch {
+        }
+      } else {
+        log(`Relay upgrade failed: status=${res.statusCode}`);
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      }
+    });
+    sock.on("open", () => {
+      log(`Connected to relay as ${handle}`);
+      if (!settled) {
+        settled = true;
+        resolve(true);
+      }
+    });
+    sock.on("message", async (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "ping") {
+        sock.send(JSON.stringify({ type: "pong" }));
+        return;
+      }
+      if (msg.type === "registered") {
+        log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: "Saved Talkative login is invalid. Run talk_set_handle with your email to re-authenticate.",
+            content: `Welcome to the Talkative network! You're connected as ${handle}.`,
             meta: { from: "system" }
           }
         });
-      } catch {
+        return;
       }
-    } else {
-      log(`Relay upgrade failed: status=${res.statusCode}`);
-    }
-  });
-  sock.on("open", () => {
-    log(`Connected to relay as ${handle}`);
-  });
-  sock.on("message", async (data) => {
-    const msg = JSON.parse(data.toString());
-    if (msg.type === "ping") {
-      sock.send(JSON.stringify({ type: "pong" }));
-      return;
-    }
-    if (msg.type === "registered") {
-      log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: `Welcome to the Talkative network! You're connected as ${handle}.`,
-          meta: { from: "system" }
+      if (msg.type === "peers") {
+        if (pendingPeersResolve) {
+          pendingPeersResolve(msg.peers);
+          pendingPeersResolve = null;
         }
-      });
-      return;
-    }
-    if (msg.type === "peers") {
-      if (pendingPeersResolve) {
-        pendingPeersResolve(msg.peers);
-        pendingPeersResolve = null;
+        return;
       }
-      return;
-    }
-    if (msg.type === "message") {
-      log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
-      try {
+      if (msg.type === "message") {
+        log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
+        try {
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: msg.text,
+              meta: { from: msg.from_handle }
+            }
+          });
+          log("Channel notification sent to Claude Code");
+        } catch (err) {
+          log(`Channel notification FAILED: ${err.message}`);
+        }
+        return;
+      }
+      if (msg.type === "error") {
+        log(`Relay error: ${msg.text}`);
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: msg.text,
-            meta: { from: msg.from_handle }
+            content: `Network error: ${msg.text}`,
+            meta: { from: "system" }
           }
         });
-        log("Channel notification sent to Claude Code");
-      } catch (err) {
-        log(`Channel notification FAILED: ${err.message}`);
+        return;
       }
-      return;
-    }
-    if (msg.type === "error") {
-      log(`Relay error: ${msg.text}`);
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: `Network error: ${msg.text}`,
-          meta: { from: "system" }
-        }
-      });
-      return;
-    }
-  });
-  sock.on("error", async (err) => {
-    log(`WebSocket error: ${err.message}`);
-  });
-  sock.on("close", async () => {
-    log("Disconnected from relay.");
-    ws = null;
-    if (authRejected || intentionalClose) {
-      intentionalClose = false;
-      return;
-    }
-    try {
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: { content: "Disconnected from the Talkative relay. Reconnecting in 5 seconds...", meta: { from: "system" } }
-      });
-    } catch {
-    }
-    setTimeout(connectRelay, 5e3);
+    });
+    sock.on("error", async (err) => {
+      log(`WebSocket error: ${err.message}`);
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+    });
+    sock.on("close", async () => {
+      log("Disconnected from relay.");
+      ws = null;
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+      if (authRejected || intentionalClose) {
+        intentionalClose = false;
+        return;
+      }
+      try {
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: { content: "Disconnected from the Talkative relay. Reconnecting in 5 seconds...", meta: { from: "system" } }
+        });
+      } catch {
+      }
+      setTimeout(connectRelay, 5e3);
+    });
   });
 }
 async function revokeTokenOnServer(auth) {
@@ -24827,11 +24851,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const h = `@${email3.split("@")[0].replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`;
     const existing = loadAuth();
     if (existing && existing.handle === h && existing.token) {
-      handle = h;
-      if (!ws || ws.readyState !== wrapper_default.OPEN) {
-        connectRelay();
+      if (ws && ws.readyState === wrapper_default.OPEN) {
+        return { content: [{ type: "text", text: `Already connected as ${h}.` }] };
       }
-      return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
+      handle = h;
+      const connected = await connectRelay();
+      if (connected) {
+        return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
+      }
     }
     const result = await beginLogin(email3, h);
     if (!result.ok) {

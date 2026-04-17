@@ -86,10 +86,12 @@ let pendingPeersResolve: ((peers: any[]) => void) | null = null;
 let ws: WebSocket | null = null;
 let intentionalClose = false;
 
-function connectRelay() {
+function connectRelay(): Promise<boolean> {
+  return new Promise((resolve) => {
   const auth = loadAuth();
   if (!auth) {
     log('No saved credentials. Waiting for user to log in with talk_set_handle.');
+    resolve(false);
     return;
   }
   handle = auth.handle;
@@ -98,12 +100,14 @@ function connectRelay() {
   ws = sock;
 
   let authRejected = false;
+  let settled = false;
 
   sock.on('unexpected-response', async (_req, res) => {
     if (res.statusCode === 401) {
       authRejected = true;
       log('Relay rejected stored credentials (401). Clearing auth.');
       clearAuth();
+      if (!settled) { settled = true; resolve(false); }
       try {
         await mcp.notification({
           method: 'notifications/claude/channel',
@@ -115,11 +119,13 @@ function connectRelay() {
       } catch {}
     } else {
       log(`Relay upgrade failed: status=${res.statusCode}`);
+      if (!settled) { settled = true; resolve(false); }
     }
   });
 
   sock.on('open', () => {
     log(`Connected to relay as ${handle}`);
+    if (!settled) { settled = true; resolve(true); }
   });
 
   sock.on('message', async (data: Buffer) => {
@@ -182,13 +188,14 @@ function connectRelay() {
 
   sock.on('error', async (err) => {
     log(`WebSocket error: ${err.message}`);
+    if (!settled) { settled = true; resolve(false); }
   });
 
   sock.on('close', async () => {
     log('Disconnected from relay.');
     ws = null;
+    if (!settled) { settled = true; resolve(false); }
     if (authRejected || intentionalClose) {
-      // Either credentials were bad or the user asked to log out — do not reconnect.
       intentionalClose = false;
       return;
     }
@@ -199,6 +206,7 @@ function connectRelay() {
       });
     } catch {}
     setTimeout(connectRelay, 5000);
+  });
   });
 }
 
@@ -375,14 +383,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     // Derive handle from email: strip domain, remove special chars, prefix with @
     const h = `@${email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}`;
 
-    // Already have a valid token for this handle? Just (re)connect.
+    // Already have a saved token for this handle? Verify it against the relay.
     const existing = loadAuth();
     if (existing && existing.handle === h && existing.token) {
-      handle = h;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        connectRelay();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        return { content: [{ type: 'text', text: `Already connected as ${h}.` }] };
       }
-      return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
+      handle = h;
+      const connected = await connectRelay();
+      if (connected) {
+        return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
+      }
+      // Token was rejected — fall through to fresh login
     }
 
     // New signup: HTTP /login, then poll /login-status in the background.
