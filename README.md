@@ -72,10 +72,12 @@ The plugin exposes six MCP tools:
 
 ### Security
 
-- Credentials never leave your machine
-- Only tool names, package names, and auth *methods* are shared — never secrets or env var values
-- The only exception: if you explicitly tell Claude to share a specific secret
-- Every action requires your approval via Claude Code's permission prompts
+- **End-to-end encrypted.** Messages between peers are encrypted client-side with X25519 + XSalsa20-Poly1305 (NaCl box). The relay routes opaque ciphertext — it cannot read message content, even with full database access.
+- Your identity secret key and auth token stay on your machine in `~/.talkative/auth.json`; only the public key is uploaded to the relay.
+- Only tool names, package names, and auth *methods* are shared — never secrets or env var values.
+- The only exception: if you explicitly tell Claude to share a specific secret.
+- Every action requires your approval via Claude Code's permission prompts.
+- For corporate deployments the relay is self-hostable — see [`SELF_HOSTING.md`](https://github.com/Buzzie-AI/talkative-relay/blob/main/SELF_HOSTING.md) in the relay repo.
 
 ### Development
 
