@@ -7,6 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import WebSocket from 'ws';
 import { scanManifest, formatManifest } from './manifest.js';
+import { generateKeypair, encryptFor, decryptFrom, KeyPair } from './crypto.js';
+
+const PROTOCOL_VERSION = '2';
 
 // --- Logging ---
 import { appendFileSync } from 'fs';
@@ -30,12 +33,19 @@ const authPath = process.env.TALKATIVE_AUTH_PATH
       : join(process.cwd(), process.env.TALKATIVE_AUTH_PATH))
   : join(homedir(), '.talkative', 'auth.json');
 
-interface AuthData { handle: string; token: string; }
+interface AuthData {
+  handle: string;
+  token: string;
+  publicKey: string;
+  secretKey: string;
+}
 
 function loadAuth(): AuthData | null {
   try {
     const data = JSON.parse(readFileSync(authPath, 'utf8'));
-    if (data.handle && data.token) return data as AuthData;
+    if (data.handle && data.token && data.publicKey && data.secretKey) {
+      return data as AuthData;
+    }
   } catch {}
   return null;
 }
@@ -82,6 +92,11 @@ const mcp = new Server(
 // --- Pending state for async tool calls ---
 let pendingPeersResolve: ((peers: any[]) => void) | null = null;
 
+// --- Peer public-key cache ---
+// Populated from `peers` responses and from `from_pubkey` on inbound messages.
+// Used by talk_send to encrypt before transmitting.
+const peerPubkeys: Map<string, string> = new Map();
+
 // --- WebSocket to Relay ---
 let ws: WebSocket | null = null;
 let intentionalClose = false;
@@ -95,7 +110,7 @@ function connectRelay(): Promise<boolean> {
     return;
   }
   handle = auth.handle;
-  const url = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}`;
+  const url = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}&v=${PROTOCOL_VERSION}`;
   const sock = new WebSocket(url);
   ws = sock;
 
@@ -149,6 +164,9 @@ function connectRelay(): Promise<boolean> {
     }
 
     if (msg.type === 'peers') {
+      for (const p of msg.peers ?? []) {
+        if (p?.handle && p?.pubkey) peerPubkeys.set(p.handle, p.pubkey);
+      }
       if (pendingPeersResolve) {
         pendingPeersResolve(msg.peers);
         pendingPeersResolve = null;
@@ -157,12 +175,35 @@ function connectRelay(): Promise<boolean> {
     }
 
     if (msg.type === 'message') {
-      log(`Message from ${msg.from_handle}: ${msg.text.slice(0, 200)}`);
+      const auth = loadAuth();
+      if (!auth) {
+        log('Inbound message but no auth loaded — dropping.');
+        return;
+      }
+      if (!msg.from_pubkey || !msg.nonce || !msg.ciphertext) {
+        log(`Malformed E2E message from ${msg.from_handle} — missing fields.`);
+        return;
+      }
+      // Remember the sender's pubkey for future outbound encryption.
+      peerPubkeys.set(msg.from_handle, msg.from_pubkey);
+      const plaintext = decryptFrom(msg.from_pubkey, auth.secretKey, msg.nonce, msg.ciphertext);
+      if (plaintext == null) {
+        log(`Decrypt failed from ${msg.from_handle} — key mismatch or tampered ciphertext.`);
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: `Received an unreadable message from ${msg.from_handle}. Their identity key may have rotated — ask them to re-send.`,
+            meta: { from: 'system' },
+          },
+        });
+        return;
+      }
+      log(`Message from ${msg.from_handle}: ${plaintext.slice(0, 200)}`);
       try {
         await mcp.notification({
           method: 'notifications/claude/channel',
           params: {
-            content: msg.text,
+            content: plaintext,
             meta: { from: msg.from_handle },
           },
         });
@@ -236,12 +277,16 @@ function closeLocalSession() {
 
 // --- HTTP signup flow ---
 
-async function beginLogin(email: string, h: string): Promise<{ ok: true; pendingId: string; emailHint: string } | { ok: false; error: string }> {
+async function beginLogin(
+  email: string,
+  h: string,
+  publicKey: string,
+): Promise<{ ok: true; pendingId: string; emailHint: string } | { ok: false; error: string }> {
   try {
     const resp = await fetch(`${httpBase}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, handle: h }),
+      body: JSON.stringify({ email, handle: h, pubkey: publicKey }),
     });
     const data = await resp.json() as { pending_id?: string; email_hint?: string; error?: string };
     if (!resp.ok || !data.pending_id) {
@@ -253,7 +298,7 @@ async function beginLogin(email: string, h: string): Promise<{ ok: true; pending
   }
 }
 
-async function pollLoginStatus(pendingId: string) {
+async function pollLoginStatus(pendingId: string, keypair: KeyPair) {
   const deadline = Date.now() + 10 * 60 * 1000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
@@ -273,7 +318,12 @@ async function pollLoginStatus(pendingId: string) {
       const data = await resp.json() as { status: string; handle?: string; token?: string };
       if (data.status === 'pending') continue;
       if (data.status === 'verified' && data.token && data.handle) {
-        saveAuth({ handle: data.handle, token: data.token });
+        saveAuth({
+          handle: data.handle,
+          token: data.token,
+          publicKey: keypair.publicKey,
+          secretKey: keypair.secretKey,
+        });
         handle = data.handle;
         log(`Verified and logged in as ${data.handle}`);
         await mcp.notification({
@@ -397,12 +447,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // Token was rejected — fall through to fresh login
     }
 
-    // New signup: HTTP /login, then poll /login-status in the background.
-    const result = await beginLogin(email, h);
+    // Fresh login always mints a new identity keypair. The public half is
+    // bound to the identity at email-verification time on the relay; the
+    // secret half stays in auth.json.
+    const keypair = generateKeypair();
+    const result = await beginLogin(email, h, keypair.publicKey);
     if (!result.ok) {
       return { content: [{ type: 'text', text: `Failed to start login: ${result.error}` }] };
     }
-    pollLoginStatus(result.pendingId).catch((err) => log(`login poll crashed: ${err.message}`));
+    pollLoginStatus(result.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
     return {
       content: [{
         type: 'text',
@@ -416,7 +469,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return { content: [{ type: 'text', text: 'Not connected to relay. Run talk_set_handle to log in.' }] };
     }
-    ws.send(JSON.stringify({ type: 'message', to, text: message, from_handle: handle }));
+    const auth = loadAuth();
+    if (!auth) {
+      return { content: [{ type: 'text', text: 'No local identity. Run talk_set_handle to log in.' }] };
+    }
+    let peerPubkey = peerPubkeys.get(to);
+    if (!peerPubkey) {
+      try {
+        const peers = await requestPeers();
+        for (const p of peers) {
+          if (p?.handle && p?.pubkey) peerPubkeys.set(p.handle, p.pubkey);
+        }
+        peerPubkey = peerPubkeys.get(to);
+      } catch (err: any) {
+        return { content: [{ type: 'text', text: `Could not resolve ${to}'s public key: ${err.message}` }] };
+      }
+    }
+    if (!peerPubkey) {
+      return { content: [{ type: 'text', text: `${to} is not online — cannot deliver encrypted message.` }] };
+    }
+    const { nonce, ciphertext } = encryptFor(peerPubkey, auth.secretKey, message);
+    ws.send(JSON.stringify({ type: 'message', to, nonce, ciphertext }));
     return { content: [{ type: 'text', text: `Message sent to ${to}.` }] };
   }
 
