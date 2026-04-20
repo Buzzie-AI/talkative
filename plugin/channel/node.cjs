@@ -26858,6 +26858,9 @@ function clearAuth() {
   } catch {
   }
 }
+function sanitize(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 var rawUrl = process.env.TALKATIVE_RELAY_URL ?? "wss://talkative-relay.workers.dev";
 var wsBase = rawUrl.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
 var httpBase = rawUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
@@ -26976,7 +26979,7 @@ function connectRelay() {
           await mcp.notification({
             method: "notifications/claude/channel",
             params: {
-              content: `Received an unreadable message from ${msg.from_handle}. Their identity key may have rotated \u2014 ask them to re-send.`,
+              content: `Received an unreadable message from ${sanitize(msg.from_handle)}. Their identity key may have rotated \u2014 ask them to re-send.`,
               meta: { from: "system" }
             }
           });
@@ -26987,7 +26990,7 @@ function connectRelay() {
           await mcp.notification({
             method: "notifications/claude/channel",
             params: {
-              content: plaintext,
+              content: sanitize(plaintext),
               meta: { from: msg.from_handle }
             }
           });
@@ -27002,7 +27005,7 @@ function connectRelay() {
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: `Network error: ${msg.text}`,
+            content: `Network error: ${sanitize(msg.text)}`,
             meta: { from: "system" }
           }
         });
