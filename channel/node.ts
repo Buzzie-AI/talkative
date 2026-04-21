@@ -103,6 +103,9 @@ const mcp = new Server(
 // --- Pending state for async tool calls ---
 let pendingPeersResolve: ((peers: any[]) => void) | null = null;
 
+// --- Pending delivery acks ---
+const pendingAcks = new Map<string, (result: { ok: boolean; error?: string }) => void>();
+
 // --- Peer public-key cache ---
 // Populated from `peers` responses and from `from_pubkey` on inbound messages.
 // Used by talk_send to encrypt before transmitting.
@@ -185,6 +188,15 @@ function connectRelay(): Promise<boolean> {
       return;
     }
 
+    if (msg.type === 'ack' && msg.msg_id) {
+      const pending = pendingAcks.get(msg.msg_id);
+      if (pending) {
+        pendingAcks.delete(msg.msg_id);
+        pending({ ok: true });
+      }
+      return;
+    }
+
     if (msg.type === 'message') {
       const auth = loadAuth();
       if (!auth) {
@@ -227,6 +239,14 @@ function connectRelay(): Promise<boolean> {
 
     if (msg.type === 'error') {
       log(`Relay error: ${msg.text}`);
+      if (msg.msg_id) {
+        const pending = pendingAcks.get(msg.msg_id);
+        if (pending) {
+          pendingAcks.delete(msg.msg_id);
+          pending({ ok: false, error: msg.text });
+          return;
+        }
+      }
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -500,8 +520,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: 'text', text: `${to} is not online — cannot deliver encrypted message.` }] };
     }
     const { nonce, ciphertext } = encryptFor(peerPubkey, auth.secretKey, message);
-    ws.send(JSON.stringify({ type: 'message', to, nonce, ciphertext }));
-    return { content: [{ type: 'text', text: `Message sent to ${to}.` }] };
+    const msgId = Math.random().toString(36).slice(2, 10);
+    const ackPromise = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      pendingAcks.set(msgId, resolve);
+      setTimeout(() => {
+        if (pendingAcks.delete(msgId)) {
+          resolve({ ok: false, error: 'Relay did not confirm delivery.' });
+        }
+      }, 5_000);
+    });
+    ws.send(JSON.stringify({ type: 'message', to, msg_id: msgId, nonce, ciphertext }));
+    const result = await ackPromise;
+    if (result.ok) {
+      return { content: [{ type: 'text', text: `Message delivered to ${to}.` }] };
+    }
+    return { content: [{ type: 'text', text: `Message to ${to} failed: ${result.error}` }] };
   }
 
   if (name === 'talk_peers') {

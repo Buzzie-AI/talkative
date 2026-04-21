@@ -26884,6 +26884,7 @@ var mcp = new Server(
   }
 );
 var pendingPeersResolve = null;
+var pendingAcks = /* @__PURE__ */ new Map();
 var peerPubkeys = /* @__PURE__ */ new Map();
 var ws = null;
 var intentionalClose = false;
@@ -26962,6 +26963,14 @@ function connectRelay() {
         }
         return;
       }
+      if (msg.type === "ack" && msg.msg_id) {
+        const pending = pendingAcks.get(msg.msg_id);
+        if (pending) {
+          pendingAcks.delete(msg.msg_id);
+          pending({ ok: true });
+        }
+        return;
+      }
       if (msg.type === "message") {
         const auth2 = loadAuth();
         if (!auth2) {
@@ -27002,6 +27011,14 @@ function connectRelay() {
       }
       if (msg.type === "error") {
         log(`Relay error: ${msg.text}`);
+        if (msg.msg_id) {
+          const pending = pendingAcks.get(msg.msg_id);
+          if (pending) {
+            pendingAcks.delete(msg.msg_id);
+            pending({ ok: false, error: msg.text });
+            return;
+          }
+        }
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
@@ -27256,8 +27273,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: `${to} is not online \u2014 cannot deliver encrypted message.` }] };
     }
     const { nonce, ciphertext } = encryptFor(peerPubkey, auth.secretKey, message);
-    ws.send(JSON.stringify({ type: "message", to, nonce, ciphertext }));
-    return { content: [{ type: "text", text: `Message sent to ${to}.` }] };
+    const msgId = Math.random().toString(36).slice(2, 10);
+    const ackPromise = new Promise((resolve) => {
+      pendingAcks.set(msgId, resolve);
+      setTimeout(() => {
+        if (pendingAcks.delete(msgId)) {
+          resolve({ ok: false, error: "Relay did not confirm delivery." });
+        }
+      }, 5e3);
+    });
+    ws.send(JSON.stringify({ type: "message", to, msg_id: msgId, nonce, ciphertext }));
+    const result = await ackPromise;
+    if (result.ok) {
+      return { content: [{ type: "text", text: `Message delivered to ${to}.` }] };
+    }
+    return { content: [{ type: "text", text: `Message to ${to} failed: ${result.error}` }] };
   }
   if (name === "talk_peers") {
     try {
