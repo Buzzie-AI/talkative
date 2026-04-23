@@ -26826,12 +26826,17 @@ function handleVariant(base, attempt) {
   return `${base}${attempt}`;
 }
 var HANDLE_RETRY_MAX_ATTEMPTS = 10;
+function isSameUser(saved, email3, derivedHandle) {
+  if (!saved) return false;
+  if (saved.email) return saved.email === email3;
+  return saved.handle === derivedHandle;
+}
 
 // channel/node.ts
 var import_fs3 = require("fs");
 var import_meta = {};
 var PROTOCOL_VERSION = "2";
-var PLUGIN_VERSION = "1.3.4";
+var PLUGIN_VERSION = "1.3.5";
 var lastSeenRelayProto = null;
 var lastSeenRelayBuild = null;
 var CLIENT_VERSION_HEADERS = {
@@ -27186,7 +27191,7 @@ async function beginLogin(email3, h, publicKey) {
     return { ok: false, error: err.message };
   }
 }
-async function pollLoginStatus(pendingId, keypair) {
+async function pollLoginStatus(pendingId, keypair, email3) {
   const deadline = Date.now() + 10 * 60 * 1e3;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3e3));
@@ -27210,7 +27215,8 @@ async function pollLoginStatus(pendingId, keypair) {
           handle: data.handle,
           token: data.token,
           publicKey: keypair.publicKey,
-          secretKey: keypair.secretKey
+          secretKey: keypair.secretKey,
+          email: email3
         });
         handle = data.handle;
         log(`Verified and logged in as ${data.handle}`);
@@ -27317,14 +27323,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const email3 = args.email;
     const baseHandle = deriveBaseHandle(email3);
     const existing = loadAuth();
-    if (existing && existing.handle === baseHandle && existing.token) {
+    if (existing && isSameUser(existing, email3, baseHandle) && existing.token) {
       if (ws && ws.readyState === wrapper_default.OPEN) {
-        return { content: [{ type: "text", text: `Already connected as ${baseHandle}.` }] };
+        return { content: [{ type: "text", text: `Already connected as ${existing.handle}.` }] };
       }
-      handle = baseHandle;
+      handle = existing.handle;
       const connected = await connectRelay();
       if (connected) {
-        return { content: [{ type: "text", text: `Logged in as ${baseHandle}.` }] };
+        return { content: [{ type: "text", text: `Logged in as ${existing.handle}.` }] };
       }
     }
     const keypair = generateKeypair();
@@ -27352,7 +27358,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }]
       };
     }
-    pollLoginStatus(lastResult.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+    pollLoginStatus(lastResult.pendingId, keypair, email3).catch((err) => log(`login poll crashed: ${err.message}`));
     const collisionNote = assignedHandle !== baseHandle ? ` (${baseHandle} was taken; you'll be registered as ${assignedHandle})` : "";
     return {
       content: [{

@@ -8,13 +8,13 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import WebSocket from 'ws';
 import { scanManifest, formatManifest } from './manifest.js';
 import { generateKeypair, encryptFor, decryptFrom, KeyPair } from './crypto.js';
-import { deriveBaseHandle, handleVariant, HANDLE_RETRY_MAX_ATTEMPTS } from './handle.js';
+import { deriveBaseHandle, handleVariant, HANDLE_RETRY_MAX_ATTEMPTS, isSameUser } from './handle.js';
 
 const PROTOCOL_VERSION = '2';
 // Plugin build version. Keep in sync with plugin/.claude-plugin/plugin.json
 // (there's a memory rule about this). Sent on every request so the relay
 // can log skew and the user can see it in any error message.
-const PLUGIN_VERSION = '1.3.4';
+const PLUGIN_VERSION = '1.3.5';
 
 // Latest relay versions observed on the current connection (populated from
 // the `registered` message and from HTTP response headers). Used to build
@@ -83,6 +83,12 @@ interface AuthData {
   token: string;
   publicKey: string;
   secretKey: string;
+  // Email the user registered with. Used to match "same user" regardless
+  // of which @handleN they were assigned when a collision happened.
+  // Optional for backwards compatibility with auth.json files written by
+  // plugin versions before 1.3.5 — those will be backfilled on the next
+  // successful login.
+  email?: string;
 }
 
 function loadAuth(): AuthData | null {
@@ -457,7 +463,7 @@ async function beginLogin(
   }
 }
 
-async function pollLoginStatus(pendingId: string, keypair: KeyPair) {
+async function pollLoginStatus(pendingId: string, keypair: KeyPair, email: string) {
   const deadline = Date.now() + 10 * 60 * 1000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
@@ -482,6 +488,7 @@ async function pollLoginStatus(pendingId: string, keypair: KeyPair) {
           token: data.token,
           publicKey: keypair.publicKey,
           secretKey: keypair.secretKey,
+          email,
         });
         handle = data.handle;
         log(`Verified and logged in as ${data.handle}`);
@@ -596,19 +603,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     const baseHandle = deriveBaseHandle(email);
 
-    // Already have a saved token for this base handle? Verify it against
-    // the relay. (Users whose base collided and were assigned @baseN will
-    // not hit this fast-path — they'll fall through and the retry loop
-    // below will land on their @baseN again since their email matches.)
+    // Already have a saved token for this user? Verify it against the
+    // relay without re-sending a verification email. See isSameUser for
+    // the matching rules (email-preferred, handle-legacy-fallback).
     const existing = loadAuth();
-    if (existing && existing.handle === baseHandle && existing.token) {
+    if (existing && isSameUser(existing, email, baseHandle) && existing.token) {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        return { content: [{ type: 'text', text: `Already connected as ${baseHandle}.` }] };
+        return { content: [{ type: 'text', text: `Already connected as ${existing.handle}.` }] };
       }
-      handle = baseHandle;
+      handle = existing.handle;
       const connected = await connectRelay();
       if (connected) {
-        return { content: [{ type: 'text', text: `Logged in as ${baseHandle}.` }] };
+        return { content: [{ type: 'text', text: `Logged in as ${existing.handle}.` }] };
       }
       // Token was rejected — fall through to fresh login
     }
@@ -647,7 +653,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
     }
 
-    pollLoginStatus(lastResult.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+    pollLoginStatus(lastResult.pendingId, keypair, email).catch((err) => log(`login poll crashed: ${err.message}`));
 
     const collisionNote = assignedHandle !== baseHandle
       ? ` (${baseHandle} was taken; you'll be registered as ${assignedHandle})`
