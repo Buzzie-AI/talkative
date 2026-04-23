@@ -10,6 +10,50 @@ import { scanManifest, formatManifest } from './manifest.js';
 import { generateKeypair, encryptFor, decryptFrom, KeyPair } from './crypto.js';
 
 const PROTOCOL_VERSION = '2';
+// Plugin build version. Keep in sync with plugin/.claude-plugin/plugin.json
+// (there's a memory rule about this). Sent on every request so the relay
+// can log skew and the user can see it in any error message.
+const PLUGIN_VERSION = '1.3.3';
+
+// Latest relay versions observed on the current connection (populated from
+// the `registered` message and from HTTP response headers). Used to build
+// self-diagnosing error strings.
+let lastSeenRelayProto: string | null = null;
+let lastSeenRelayBuild: string | null = null;
+
+const CLIENT_VERSION_HEADERS: Record<string, string> = {
+  'X-Talkative-Plugin-Build': PLUGIN_VERSION,
+  'X-Talkative-Plugin-Proto': PROTOCOL_VERSION,
+};
+
+function mergeClientHeaders(init?: RequestInit): RequestInit {
+  const existing = (init?.headers ?? {}) as Record<string, string>;
+  return {
+    ...init,
+    headers: { ...CLIENT_VERSION_HEADERS, ...existing },
+  };
+}
+
+function relayFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, mergeClientHeaders(init)).then((resp) => {
+    // Cache the relay versions from any response so we can include them in
+    // error messages even when the error itself comes from elsewhere.
+    const proto = resp.headers.get('x-talkative-relay-proto');
+    const build = resp.headers.get('x-talkative-relay-build');
+    if (proto) lastSeenRelayProto = proto;
+    if (build) lastSeenRelayBuild = build;
+    return resp;
+  });
+}
+
+function versionTail(relayProto?: string | null, relayBuild?: string | null): string {
+  const p = relayProto ?? lastSeenRelayProto;
+  const b = relayBuild ?? lastSeenRelayBuild;
+  if (!p && !b) {
+    return ` (plugin build=${PLUGIN_VERSION} proto=${PROTOCOL_VERSION}; relay version unknown)`;
+  }
+  return ` (plugin build=${PLUGIN_VERSION} proto=${PROTOCOL_VERSION} ↔ relay build=${b ?? '?'} proto=${p ?? '?'})`;
+}
 
 // --- Logging ---
 import { appendFileSync } from 'fs';
@@ -106,6 +150,20 @@ let pendingPeersResolve: ((peers: any[]) => void) | null = null;
 // --- Pending delivery acks ---
 const pendingAcks = new Map<string, (result: { ok: boolean; error?: string }) => void>();
 
+// --- Pending diagnostic check_response, keyed by nonce ---
+interface CheckResponse {
+  sentinel?: string;
+  nonce?: string | null;
+  node_id?: string | null;
+  handle?: string | null;
+  sockets_for_handle?: number;
+  total_sockets_online?: number;
+  relay_proto?: string;
+  relay_build?: string;
+  server_time_ms?: number;
+}
+const pendingChecks = new Map<string, (resp: CheckResponse) => void>();
+
 // --- Peer public-key cache ---
 // Populated from `peers` responses and from `from_pubkey` on inbound messages.
 // Used by talk_send to encrypt before transmitting.
@@ -124,32 +182,53 @@ function connectRelay(): Promise<boolean> {
     return;
   }
   handle = auth.handle;
-  const url = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}&v=${PROTOCOL_VERSION}`;
+  const url = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}&v=${PROTOCOL_VERSION}&build=${encodeURIComponent(PLUGIN_VERSION)}`;
   const sock = new WebSocket(url);
   ws = sock;
 
   let authRejected = false;
+  let evicted = false; // set when relay kicks this session because another login took over
   let settled = false;
 
-  sock.on('unexpected-response', async (_req, res) => {
-    if (res.statusCode === 401) {
+  sock.on('unexpected-response', (_req, res) => {
+    const statusCode = res.statusCode ?? 0;
+
+    // Capture relay versions from response headers for diagnostics.
+    const relayProto = (res.headers['x-talkative-relay-proto'] as string | undefined) ?? null;
+    const relayBuild = (res.headers['x-talkative-relay-build'] as string | undefined) ?? null;
+    if (relayProto) lastSeenRelayProto = relayProto;
+    if (relayBuild) lastSeenRelayBuild = relayBuild;
+
+    // Settle the connect promise immediately so we don't block on body read.
+    if (statusCode === 401) {
       authRejected = true;
-      log('Relay rejected stored credentials (401). Clearing auth.');
       clearAuth();
-      if (!settled) { settled = true; resolve(false); }
+    }
+    if (!settled) { settled = true; resolve(false); }
+
+    // Collect the relay's explanation and surface it via channel so the
+    // user sees exactly what went wrong (e.g. version mismatch naming
+    // both versions, or a specific 401 reason). Always append a version
+    // tail so the user can see skew even when the error isn't obviously
+    // version-shaped.
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', (chunk: string) => { body += chunk; });
+    res.on('end', async () => {
+      const trimmed = body.trim();
+      log(`Relay upgrade failed: status=${statusCode} relay_build=${relayBuild ?? 'unknown'} body=${trimmed.slice(0, 300)}`);
+      const fallback = statusCode === 401
+        ? 'Saved Talkative login is invalid. Run talk_set_handle to re-authenticate.'
+        : `Couldn't connect to the Talkative relay (HTTP ${statusCode}).`;
+      const content = (trimmed || fallback) + versionTail(relayProto, relayBuild);
       try {
         await mcp.notification({
           method: 'notifications/claude/channel',
-          params: {
-            content: 'Saved Talkative login is invalid. Run talk_set_handle with your email to re-authenticate.',
-            meta: { from: 'system' },
-          },
+          params: { content, meta: { from: 'system' } },
         });
       } catch {}
-    } else {
-      log(`Relay upgrade failed: status=${res.statusCode}`);
-      if (!settled) { settled = true; resolve(false); }
-    }
+    });
+    res.on('error', () => { /* logged via body read */ });
   });
 
   sock.on('open', () => {
@@ -165,8 +244,28 @@ function connectRelay(): Promise<boolean> {
       return;
     }
 
+    // Relay is telling us another session took over this handle. Set the
+    // flag so the close handler won't auto-reconnect, then surface the
+    // message to the user so they know what happened.
+    if (msg.type === 'evicted') {
+      evicted = true;
+      const reason = typeof msg.text === 'string' && msg.text.trim().length > 0
+        ? msg.text
+        : `Signed out here: another Talkative session took over ${handle}. Run talk_set_handle to reconnect.`;
+      log(`Evicted by relay (reason=${msg.reason ?? 'unknown'}): ${reason}`);
+      try {
+        await mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: reason, meta: { from: 'system' } },
+        });
+      } catch {}
+      return;
+    }
+
     if (msg.type === 'registered') {
-      log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
+      if (typeof msg.relay_proto === 'string') lastSeenRelayProto = msg.relay_proto;
+      if (typeof msg.relay_build === 'string') lastSeenRelayBuild = msg.relay_build;
+      log(`Registered as ${handle} (node: ${msg.node_id}) relay_build=${lastSeenRelayBuild ?? 'unknown'} relay_proto=${lastSeenRelayProto ?? 'unknown'}`);
       await mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -184,6 +283,15 @@ function connectRelay(): Promise<boolean> {
       if (pendingPeersResolve) {
         pendingPeersResolve(msg.peers);
         pendingPeersResolve = null;
+      }
+      return;
+    }
+
+    if (msg.type === 'check_response' && typeof msg.nonce === 'string') {
+      const resolver = pendingChecks.get(msg.nonce);
+      if (resolver) {
+        pendingChecks.delete(msg.nonce);
+        resolver(msg as CheckResponse);
       }
       return;
     }
@@ -263,12 +371,28 @@ function connectRelay(): Promise<boolean> {
     if (!settled) { settled = true; resolve(false); }
   });
 
-  sock.on('close', async () => {
-    log('Disconnected from relay.');
+  sock.on('close', async (code) => {
+    log(`Disconnected from relay (code=${code}).`);
     ws = null;
     if (!settled) { settled = true; resolve(false); }
-    if (authRejected || intentionalClose) {
+    // Close code 4001 = relay kicked us because another session took over.
+    // Treat it the same as an in-band `evicted` message in case the message
+    // didn't arrive before the close frame.
+    const kickedByCode = code === 4001;
+    if (authRejected || intentionalClose || evicted || kickedByCode) {
       intentionalClose = false;
+      if (kickedByCode && !evicted) {
+        // Fallback: close code arrived without the explanatory message.
+        try {
+          await mcp.notification({
+            method: 'notifications/claude/channel',
+            params: {
+              content: `Signed out here: another Talkative session took over ${handle}. Run talk_set_handle to reconnect.`,
+              meta: { from: 'system' },
+            },
+          });
+        } catch {}
+      }
       return;
     }
     try {
@@ -284,7 +408,7 @@ function connectRelay(): Promise<boolean> {
 
 async function revokeTokenOnServer(auth: AuthData): Promise<{ ok: boolean; error?: string }> {
   try {
-    const resp = await fetch(`${httpBase}/logout`, {
+    const resp = await relayFetch(`${httpBase}/logout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ handle: auth.handle, token: auth.token }),
@@ -314,7 +438,7 @@ async function beginLogin(
   publicKey: string,
 ): Promise<{ ok: true; pendingId: string; emailHint: string } | { ok: false; error: string }> {
   try {
-    const resp = await fetch(`${httpBase}/login`, {
+    const resp = await relayFetch(`${httpBase}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, handle: h, pubkey: publicKey }),
@@ -334,7 +458,7 @@ async function pollLoginStatus(pendingId: string, keypair: KeyPair) {
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
     try {
-      const resp = await fetch(`${httpBase}/login-status?pending_id=${encodeURIComponent(pendingId)}`);
+      const resp = await relayFetch(`${httpBase}/login-status?pending_id=${encodeURIComponent(pendingId)}`);
       if (resp.status === 404 || resp.status === 410) {
         await mcp.notification({
           method: 'notifications/claude/channel',
@@ -442,6 +566,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'talk_logout_local',
       description: 'Log out on this machine only. Closes the local connection and forgets saved credentials, but the token remains valid on the server. Use this to switch machines without revoking access elsewhere.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'talk_check',
+      description: 'Diagnostic roundtrip: sends a probe to the relay and reports back whether the live WebSocket is healthy, how many sockets are connected as this handle (should be 1), round-trip latency, and client/relay versions. Use this when something feels broken to confirm the plumbing itself is working.',
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
   ],
@@ -584,6 +713,74 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         type: 'text',
         text: `Logged out of ${auth.handle} on this machine. The token is still valid on the server — use talk_logout instead if you want to revoke it everywhere.`,
       }],
+    };
+  }
+
+  if (name === 'talk_check') {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return {
+        content: [{
+          type: 'text',
+          text: `[FAIL] Not connected to the Talkative relay. ws=${ws ? 'present' : 'null'} readyState=${ws?.readyState ?? 'n/a'}. Run talk_set_handle to log in.${versionTail()}`,
+        }],
+      };
+    }
+    const nonce = `chk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const started = Date.now();
+    const response = await new Promise<CheckResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingChecks.delete(nonce);
+        resolve(null);
+      }, 5_000);
+      pendingChecks.set(nonce, (resp) => {
+        clearTimeout(timeout);
+        resolve(resp);
+      });
+      try {
+        ws!.send(JSON.stringify({ type: 'check', nonce }));
+      } catch (err) {
+        clearTimeout(timeout);
+        pendingChecks.delete(nonce);
+        resolve(null);
+      }
+    });
+    const rttMs = Date.now() - started;
+
+    if (!response) {
+      return {
+        content: [{
+          type: 'text',
+          text: `[FAIL] No check_response from relay within 5s. The socket is open but the relay isn't answering.${versionTail()}`,
+        }],
+      };
+    }
+
+    const sentinelOk = response.sentinel === '123';
+    const socketsOk = response.sockets_for_handle === 1;
+    const handleEcho = response.handle ?? '(unknown)';
+    const lines = [
+      `[${sentinelOk && socketsOk ? 'OK' : 'WARN'}] Talkative diagnostic check`,
+      ``,
+      `Round-trip:         ${rttMs}ms`,
+      `Sentinel:           ${response.sentinel ?? '(missing)'} ${sentinelOk ? '(== 123, ok)' : '(EXPECTED 123)'}`,
+      ``,
+      `This session:`,
+      `  handle:           ${handleEcho}`,
+      `  node_id:          ${response.node_id ?? '(unknown)'}`,
+      `  sockets_for_handle: ${response.sockets_for_handle ?? '?'} ${socketsOk ? '(== 1, ok)' : '(EXPECTED 1 — kick-old invariant may be broken)'}`,
+      ``,
+      `Relay:`,
+      `  build:            ${response.relay_build ?? '?'}`,
+      `  proto:            ${response.relay_proto ?? '?'}`,
+      `  total_sockets:    ${response.total_sockets_online ?? '?'}`,
+      `  server_time:      ${response.server_time_ms ? new Date(response.server_time_ms).toISOString() : '?'}`,
+      ``,
+      `Client:`,
+      `  plugin build:     ${PLUGIN_VERSION}`,
+      `  plugin proto:     ${PROTOCOL_VERSION}`,
+    ];
+    return {
+      content: [{ type: 'text', text: lines.join('\n') }],
     };
   }
 

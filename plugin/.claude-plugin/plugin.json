@@ -1,7 +1,7 @@
 {
   "name": "talkative",
   "description": "Peer-to-peer network for Claude Code instances. Shadow a colleague's tools, onboard into MCP servers, and spread organizational capability through natural conversation.",
-  "version": "1.3.0",
+  "version": "1.3.3",
   "author": {
     "name": "Arvind Naidu"
   },

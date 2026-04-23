@@ -26821,6 +26821,37 @@ function decryptFrom(peerPubkeyB64, mySecretKeyB64, nonceB64, ciphertextB64) {
 var import_fs3 = require("fs");
 var import_meta = {};
 var PROTOCOL_VERSION = "2";
+var PLUGIN_VERSION = "1.3.3";
+var lastSeenRelayProto = null;
+var lastSeenRelayBuild = null;
+var CLIENT_VERSION_HEADERS = {
+  "X-Talkative-Plugin-Build": PLUGIN_VERSION,
+  "X-Talkative-Plugin-Proto": PROTOCOL_VERSION
+};
+function mergeClientHeaders(init) {
+  const existing = init?.headers ?? {};
+  return {
+    ...init,
+    headers: { ...CLIENT_VERSION_HEADERS, ...existing }
+  };
+}
+function relayFetch(url2, init) {
+  return fetch(url2, mergeClientHeaders(init)).then((resp) => {
+    const proto = resp.headers.get("x-talkative-relay-proto");
+    const build = resp.headers.get("x-talkative-relay-build");
+    if (proto) lastSeenRelayProto = proto;
+    if (build) lastSeenRelayBuild = build;
+    return resp;
+  });
+}
+function versionTail(relayProto, relayBuild) {
+  const p = relayProto ?? lastSeenRelayProto;
+  const b = relayBuild ?? lastSeenRelayBuild;
+  if (!p && !b) {
+    return ` (plugin build=${PLUGIN_VERSION} proto=${PROTOCOL_VERSION}; relay version unknown)`;
+  }
+  return ` (plugin build=${PLUGIN_VERSION} proto=${PROTOCOL_VERSION} \u2194 relay build=${b ?? "?"} proto=${p ?? "?"})`;
+}
 var logDir = (0, import_path2.join)((0, import_os2.homedir)(), ".talkative");
 var logPath = (0, import_path2.join)(logDir, "node.log");
 try {
@@ -26885,6 +26916,7 @@ var mcp = new Server(
 );
 var pendingPeersResolve = null;
 var pendingAcks = /* @__PURE__ */ new Map();
+var pendingChecks = /* @__PURE__ */ new Map();
 var peerPubkeys = /* @__PURE__ */ new Map();
 var ws = null;
 var intentionalClose = false;
@@ -26897,37 +26929,46 @@ function connectRelay() {
       return;
     }
     handle = auth.handle;
-    const url2 = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}&v=${PROTOCOL_VERSION}`;
+    const url2 = `${wsBase}/node?handle=${encodeURIComponent(auth.handle)}&token=${encodeURIComponent(auth.token)}&v=${PROTOCOL_VERSION}&build=${encodeURIComponent(PLUGIN_VERSION)}`;
     const sock = new wrapper_default(url2);
     ws = sock;
     let authRejected = false;
+    let evicted = false;
     let settled = false;
-    sock.on("unexpected-response", async (_req, res) => {
-      if (res.statusCode === 401) {
+    sock.on("unexpected-response", (_req, res) => {
+      const statusCode = res.statusCode ?? 0;
+      const relayProto = res.headers["x-talkative-relay-proto"] ?? null;
+      const relayBuild = res.headers["x-talkative-relay-build"] ?? null;
+      if (relayProto) lastSeenRelayProto = relayProto;
+      if (relayBuild) lastSeenRelayBuild = relayBuild;
+      if (statusCode === 401) {
         authRejected = true;
-        log("Relay rejected stored credentials (401). Clearing auth.");
         clearAuth();
-        if (!settled) {
-          settled = true;
-          resolve(false);
-        }
+      }
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", async () => {
+        const trimmed = body.trim();
+        log(`Relay upgrade failed: status=${statusCode} relay_build=${relayBuild ?? "unknown"} body=${trimmed.slice(0, 300)}`);
+        const fallback = statusCode === 401 ? "Saved Talkative login is invalid. Run talk_set_handle to re-authenticate." : `Couldn't connect to the Talkative relay (HTTP ${statusCode}).`;
+        const content = (trimmed || fallback) + versionTail(relayProto, relayBuild);
         try {
           await mcp.notification({
             method: "notifications/claude/channel",
-            params: {
-              content: "Saved Talkative login is invalid. Run talk_set_handle with your email to re-authenticate.",
-              meta: { from: "system" }
-            }
+            params: { content, meta: { from: "system" } }
           });
         } catch {
         }
-      } else {
-        log(`Relay upgrade failed: status=${res.statusCode}`);
-        if (!settled) {
-          settled = true;
-          resolve(false);
-        }
-      }
+      });
+      res.on("error", () => {
+      });
     });
     sock.on("open", () => {
       log(`Connected to relay as ${handle}`);
@@ -26942,8 +26983,23 @@ function connectRelay() {
         sock.send(JSON.stringify({ type: "pong" }));
         return;
       }
+      if (msg.type === "evicted") {
+        evicted = true;
+        const reason = typeof msg.text === "string" && msg.text.trim().length > 0 ? msg.text : `Signed out here: another Talkative session took over ${handle}. Run talk_set_handle to reconnect.`;
+        log(`Evicted by relay (reason=${msg.reason ?? "unknown"}): ${reason}`);
+        try {
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: { content: reason, meta: { from: "system" } }
+          });
+        } catch {
+        }
+        return;
+      }
       if (msg.type === "registered") {
-        log(`Registered as ${handle} (node: ${msg.node_id}). Waiting for messages...`);
+        if (typeof msg.relay_proto === "string") lastSeenRelayProto = msg.relay_proto;
+        if (typeof msg.relay_build === "string") lastSeenRelayBuild = msg.relay_build;
+        log(`Registered as ${handle} (node: ${msg.node_id}) relay_build=${lastSeenRelayBuild ?? "unknown"} relay_proto=${lastSeenRelayProto ?? "unknown"}`);
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
@@ -26960,6 +27016,14 @@ function connectRelay() {
         if (pendingPeersResolve) {
           pendingPeersResolve(msg.peers);
           pendingPeersResolve = null;
+        }
+        return;
+      }
+      if (msg.type === "check_response" && typeof msg.nonce === "string") {
+        const resolver = pendingChecks.get(msg.nonce);
+        if (resolver) {
+          pendingChecks.delete(msg.nonce);
+          resolver(msg);
         }
         return;
       }
@@ -27036,15 +27100,28 @@ function connectRelay() {
         resolve(false);
       }
     });
-    sock.on("close", async () => {
-      log("Disconnected from relay.");
+    sock.on("close", async (code) => {
+      log(`Disconnected from relay (code=${code}).`);
       ws = null;
       if (!settled) {
         settled = true;
         resolve(false);
       }
-      if (authRejected || intentionalClose) {
+      const kickedByCode = code === 4001;
+      if (authRejected || intentionalClose || evicted || kickedByCode) {
         intentionalClose = false;
+        if (kickedByCode && !evicted) {
+          try {
+            await mcp.notification({
+              method: "notifications/claude/channel",
+              params: {
+                content: `Signed out here: another Talkative session took over ${handle}. Run talk_set_handle to reconnect.`,
+                meta: { from: "system" }
+              }
+            });
+          } catch {
+          }
+        }
         return;
       }
       try {
@@ -27060,7 +27137,7 @@ function connectRelay() {
 }
 async function revokeTokenOnServer(auth) {
   try {
-    const resp = await fetch(`${httpBase}/logout`, {
+    const resp = await relayFetch(`${httpBase}/logout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ handle: auth.handle, token: auth.token })
@@ -27085,7 +27162,7 @@ function closeLocalSession() {
 }
 async function beginLogin(email3, h, publicKey) {
   try {
-    const resp = await fetch(`${httpBase}/login`, {
+    const resp = await relayFetch(`${httpBase}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email3, handle: h, pubkey: publicKey })
@@ -27104,7 +27181,7 @@ async function pollLoginStatus(pendingId, keypair) {
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3e3));
     try {
-      const resp = await fetch(`${httpBase}/login-status?pending_id=${encodeURIComponent(pendingId)}`);
+      const resp = await relayFetch(`${httpBase}/login-status?pending_id=${encodeURIComponent(pendingId)}`);
       if (resp.status === 404 || resp.status === 410) {
         await mcp.notification({
           method: "notifications/claude/channel",
@@ -27208,6 +27285,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "talk_logout_local",
       description: "Log out on this machine only. Closes the local connection and forgets saved credentials, but the token remains valid on the server. Use this to switch machines without revoking access elsewhere.",
+      inputSchema: { type: "object", properties: {}, required: [] }
+    },
+    {
+      name: "talk_check",
+      description: "Diagnostic roundtrip: sends a probe to the relay and reports back whether the live WebSocket is healthy, how many sockets are connected as this handle (should be 1), round-trip latency, and client/relay versions. Use this when something feels broken to confirm the plumbing itself is working.",
       inputSchema: { type: "object", properties: {}, required: [] }
     }
   ]
@@ -27334,6 +27416,71 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         type: "text",
         text: `Logged out of ${auth.handle} on this machine. The token is still valid on the server \u2014 use talk_logout instead if you want to revoke it everywhere.`
       }]
+    };
+  }
+  if (name === "talk_check") {
+    if (!ws || ws.readyState !== wrapper_default.OPEN) {
+      return {
+        content: [{
+          type: "text",
+          text: `[FAIL] Not connected to the Talkative relay. ws=${ws ? "present" : "null"} readyState=${ws?.readyState ?? "n/a"}. Run talk_set_handle to log in.${versionTail()}`
+        }]
+      };
+    }
+    const nonce = `chk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const started = Date.now();
+    const response = await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingChecks.delete(nonce);
+        resolve(null);
+      }, 5e3);
+      pendingChecks.set(nonce, (resp) => {
+        clearTimeout(timeout);
+        resolve(resp);
+      });
+      try {
+        ws.send(JSON.stringify({ type: "check", nonce }));
+      } catch (err) {
+        clearTimeout(timeout);
+        pendingChecks.delete(nonce);
+        resolve(null);
+      }
+    });
+    const rttMs = Date.now() - started;
+    if (!response) {
+      return {
+        content: [{
+          type: "text",
+          text: `[FAIL] No check_response from relay within 5s. The socket is open but the relay isn't answering.${versionTail()}`
+        }]
+      };
+    }
+    const sentinelOk = response.sentinel === "123";
+    const socketsOk = response.sockets_for_handle === 1;
+    const handleEcho = response.handle ?? "(unknown)";
+    const lines = [
+      `[${sentinelOk && socketsOk ? "OK" : "WARN"}] Talkative diagnostic check`,
+      ``,
+      `Round-trip:         ${rttMs}ms`,
+      `Sentinel:           ${response.sentinel ?? "(missing)"} ${sentinelOk ? "(== 123, ok)" : "(EXPECTED 123)"}`,
+      ``,
+      `This session:`,
+      `  handle:           ${handleEcho}`,
+      `  node_id:          ${response.node_id ?? "(unknown)"}`,
+      `  sockets_for_handle: ${response.sockets_for_handle ?? "?"} ${socketsOk ? "(== 1, ok)" : "(EXPECTED 1 \u2014 kick-old invariant may be broken)"}`,
+      ``,
+      `Relay:`,
+      `  build:            ${response.relay_build ?? "?"}`,
+      `  proto:            ${response.relay_proto ?? "?"}`,
+      `  total_sockets:    ${response.total_sockets_online ?? "?"}`,
+      `  server_time:      ${response.server_time_ms ? new Date(response.server_time_ms).toISOString() : "?"}`,
+      ``,
+      `Client:`,
+      `  plugin build:     ${PLUGIN_VERSION}`,
+      `  plugin proto:     ${PROTOCOL_VERSION}`
+    ];
+    return {
+      content: [{ type: "text", text: lines.join("\n") }]
     };
   }
   throw new Error(`Unknown tool: ${name}`);

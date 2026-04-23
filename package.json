@@ -9,8 +9,11 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npx tsx test/role-check.ts",
-    "test:logout": "npx tsx test/logout.test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "tsx scripts/test-integration.ts",
+    "test:integration:attach": "TALKATIVE_RELAY_SKIP_START=1 tsx scripts/test-integration.ts",
+    "test:role": "npx tsx test/role-check.ts",
     "node-worker": "tsx channel/node.ts",
     "talk": "tsx channel/node.ts",
     "build:plugin": "esbuild channel/node.ts --bundle --platform=node --target=node18 --format=cjs --outfile=plugin/channel/node.cjs --external:bufferutil --external:utf-8-validate && cp channel/instructions.md plugin/channel/instructions.md"
@@ -32,6 +35,8 @@
     "@types/node": "^20.0.0",
     "@types/ws": "^8.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.84.1"
   }
 }
