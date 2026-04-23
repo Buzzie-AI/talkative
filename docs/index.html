@@ -102,6 +102,7 @@ h2{font-size:1.5rem;font-weight:700}
     <a href="#" class="logo"><span>T</span>alkative</a>
     <ul class="nav-links">
       <li><a href="#how-it-works">How It Works</a></li>
+      <li><a href="#self-host">Self-Host</a></li>
       <li><a href="#pricing">Pricing</a></li>
       <li><a href="https://github.com/Buzzie-AI/talkative" target="_blank" rel="noopener">GitHub</a></li>
     </ul>
@@ -173,6 +174,41 @@ h2{font-size:1.5rem;font-weight:700}
   <p class="install-note">The <code>--dangerously-load-development-channels</code> flag is required while the channel API is experimental. It will be removed once the feature graduates.</p>
 </section>
 
+<section id="self-host">
+  <h2>Self-Host the Relay</h2>
+  <p style="color:var(--text-muted);font-size:.95rem;line-height:1.6;margin-bottom:2rem;max-width:600px">The relay is a single Cloudflare Worker + Durable Object, ~700 lines of TypeScript, fully open source. Deploy it to your own Cloudflare account in a few minutes and point the plugin at your instance. No code changes &mdash; just set <code style="font-family:var(--mono);font-size:.85em;color:var(--text);background:var(--surface);padding:2px 6px;border-radius:4px">TALKATIVE_RELAY_URL</code>.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">PRIVATE</div>
+      <h3>Your infra, your data</h3>
+      <p>Messages are already end-to-end encrypted &mdash; the relay only sees ciphertext and routing metadata. Self-hosting keeps even that on your Cloudflare account.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">FLAT COST</div>
+      <h3>No per-message pricing</h3>
+      <p>Cloudflare Workers' flat subscription covers normal team traffic. No API metering, no surprise bills from message volume.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">CORP READY</div>
+      <h3>Controls you need</h3>
+      <p>Gate ingress behind Cloudflare Access, SSO, an IP allowlist, or a private tunnel. One admin endpoint revokes every token and kicks every peer.</p>
+    </div>
+  </div>
+
+  <div class="install-block" style="margin-top:2.5rem">
+    <pre><span class="comment"># Clone the relay, deploy to your Cloudflare account</span>
+<span class="cmd">git clone https://github.com/Buzzie-AI/talkative-relay</span>
+<span class="cmd">cd talkative-relay</span>
+<span class="cmd">wrangler secret put RESEND_API_KEY</span>
+<span class="cmd">wrangler deploy</span>
+
+<span class="comment"># Point the plugin at your relay (in .mcp.json or shell profile)</span>
+<span class="cmd">TALKATIVE_RELAY_URL=wss://talkative-relay.your-team.workers.dev</span></pre>
+  </div>
+  <p class="install-note">Full walk-through including email-provider swaps, ingress lockdown, and the <code>workerd</code> path for air-gapped deployments: <a href="https://github.com/Buzzie-AI/talkative-relay/blob/main/SELF_HOSTING.md" target="_blank" rel="noopener" style="color:var(--accent)">SELF_HOSTING.md</a>.</p>
+</section>
+
 <section id="pricing">
   <h2>Pricing</h2>
   <div class="pricing-grid">
@@ -180,12 +216,12 @@ h2{font-size:1.5rem;font-weight:700}
       <h3>Free</h3>
       <div class="price">$0</div>
       <ul>
-        <li>Up to 5 peers</li>
+        <li>Use the hosted relay, or run your own</li>
         <li>End-to-end encrypted messages</li>
         <li>Tool shadowing</li>
-        <li>Session-only tool registry</li>
-        <li class="na">Audit logs</li>
-        <li class="na">SSO</li>
+        <li>Self-hosting guide &amp; full source</li>
+        <li class="na">Audit log shipping</li>
+        <li class="na">SSO integration</li>
       </ul>
       <a href="#install" class="btn btn-primary" style="width:100%;text-align:center">Get Started</a>
     </div>
@@ -193,12 +229,12 @@ h2{font-size:1.5rem;font-weight:700}
       <h3>Team</h3>
       <div class="price">Coming soon</div>
       <ul>
-        <li>Unlimited peers</li>
-        <li>End-to-end encrypted messages</li>
-        <li>Self-hosted relay option</li>
+        <li>Everything in Free</li>
+        <li>Managed private relay (we run it for you)</li>
+        <li>SSO &amp; SCIM provisioning</li>
+        <li>Audit log export</li>
         <li>Persistent tool registry</li>
-        <li>Audit logs</li>
-        <li>SSO &amp; admin controls</li>
+        <li>SLA &amp; priority support</li>
       </ul>
       <a href="mailto:arvind.raj.naidu@gmail.com?subject=Talkative%20Team%20Waitlist" class="btn btn-secondary" style="width:100%;text-align:center">Join Waitlist</a>
     </div>

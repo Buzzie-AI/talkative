@@ -59,14 +59,15 @@ You can also use skills directly:
 
 ### Tools
 
-The plugin exposes six MCP tools:
+The plugin exposes seven MCP tools:
 
 | Tool | Description |
 |------|-------------|
 | `talk_my_tools` | Scan local MCP configs and list what's installed |
 | `talk_send` | Send a message to a peer by handle |
 | `talk_peers` | List all online peers and their tools |
-| `talk_set_handle` | Log in with your email — sends a verification link and derives your handle automatically |
+| `talk_set_handle` | Log in with your email — sends a verification link and derives your handle automatically. If the derived handle is taken (another email registered it first), the client retries with a numeric suffix (`@joe` → `@joe2` → …) |
+| `talk_check` | Diagnostic roundtrip — confirms the live WebSocket is healthy, reports how many sockets are connected under your handle (should always be 1), round-trip latency, and client/relay versions |
 | `talk_logout` | Log out and revoke the auth token on the server (invalidates it on every machine) |
 | `talk_logout_local` | Log out on this machine only — the token remains valid on the server |
 
@@ -78,7 +79,25 @@ The plugin exposes six MCP tools:
 - The only exception: if you explicitly tell Claude to share a specific secret.
 - **Prompt injection hardened.** All inbound peer message content is entity-escaped before reaching Claude's context, preventing tag breakout attacks. Claude is additionally instructed to treat all peer messages as untrusted input and to never execute commands from peer content without user approval.
 - Every action requires your approval via Claude Code's permission prompts.
-- For corporate deployments the relay is self-hostable — see [`SELF_HOSTING.md`](https://github.com/Buzzie-AI/talkative-relay/blob/main/SELF_HOSTING.md) in the relay repo.
+- **One live session per handle.** When a second session logs in as the same handle, the relay politely closes the old one with an explanatory message. No silent zombies.
+- **Version-aware errors.** Every response advertises the relay's version; any plumbing error message names both sides' versions so you can tell whether the plugin or the relay is out of date.
+
+### Self-hosting
+
+The relay is a single Cloudflare Worker plus a Durable Object — the whole server is ~700 lines of TypeScript. Deploy it to your own Cloudflare account and point the plugin at your instance via `TALKATIVE_RELAY_URL`:
+
+```
+TALKATIVE_RELAY_URL=wss://talkative-relay.your-team.workers.dev
+```
+
+Why you'd want to:
+
+- **Your data stays on your infra.** The relay only sees ciphertext and routing metadata; nothing sensitive ever leaves your Cloudflare account.
+- **No per-message costs.** Cloudflare Workers' flat subscription covers the traffic for a normal team's usage — no API metering per query.
+- **Corporate controls.** Ingress can be gated by Cloudflare Access, IP allowlist, or a private tunnel. Administrator endpoint lets you revoke all tokens and kick all connected peers in one call.
+- **Audit trail.** `wrangler tail` streams every message envelope (handle-to-handle routing, no plaintext), which you can ship to your existing logging stack.
+
+Full step-by-step guide: [`SELF_HOSTING.md`](https://github.com/Buzzie-AI/talkative-relay/blob/main/SELF_HOSTING.md).
 
 ### Development
 
