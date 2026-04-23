@@ -198,4 +198,50 @@ describe('login → verify → login-status flow', () => {
     const resp = await fetch(`${RELAY_HTTP}/login-status`);
     expect(resp.status).toBe(400);
   });
+
+  // Collision-retry semantics: the client's handle-retry loop depends on
+  // the server correctly scoping handle ownership per email. Test that
+  // a second user with the same derived handle but different email can
+  // take @base2 after hitting 409 on @base.
+  test('collision retry: user B can claim @base2 after user A takes @base', async () => {
+    const pkA = generateKeypair();
+    const pkB = generateKeypair();
+    const base = `@collide${Date.now()}`;
+    const emailA = `owner${Date.now()}@test.invalid`;
+    const emailB = `squat${Date.now()}@test.invalid`;
+
+    // User A claims @base and verifies.
+    const loginA = await postLogin({ email: emailA, handle: base, pubkey: pkA.publicKey });
+    expect(loginA.status).toBe(200);
+    const dataA = (await loginA.json()) as { pending_id: string; verify_token: string };
+    const verifyA = await clickVerify(dataA.verify_token);
+    expect(verifyA.status).toBe(200);
+    const statusA = await pollStatus(dataA.pending_id);
+    expect(statusA.body.status).toBe('verified');
+
+    // User B's first attempt with the same base handle hits 409 (simulating
+    // what the client's retry loop sees on attempt 1).
+    const loginB1 = await postLogin({ email: emailB, handle: base, pubkey: pkB.publicKey });
+    expect(loginB1.status).toBe(409);
+
+    // User B's second attempt with the suffixed handle succeeds (attempt 2
+    // of the client retry loop).
+    const suffixed = `${base}2`;
+    const loginB2 = await postLogin({ email: emailB, handle: suffixed, pubkey: pkB.publicKey });
+    expect(loginB2.status).toBe(200);
+    const dataB = (await loginB2.json()) as { pending_id: string; verify_token: string };
+    expect(dataB.verify_token).toBeTruthy();
+    const verifyB = await clickVerify(dataB.verify_token);
+    expect(verifyB.status).toBe(200);
+    const statusB = await pollStatus(dataB.pending_id);
+    expect(statusB.body.status).toBe('verified');
+    expect(statusB.body.handle).toBe(suffixed);
+    expect(statusB.body.token).toBeTruthy();
+
+    // Both identities exist independently — A's token still works, B's new
+    // token works, and they're on different handles.
+    expect(statusA.body.handle).toBe(base);
+    expect(statusB.body.handle).toBe(suffixed);
+    expect(statusA.body.token).not.toBe(statusB.body.token);
+  });
 });

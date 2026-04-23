@@ -8,12 +8,13 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import WebSocket from 'ws';
 import { scanManifest, formatManifest } from './manifest.js';
 import { generateKeypair, encryptFor, decryptFrom, KeyPair } from './crypto.js';
+import { deriveBaseHandle, handleVariant, HANDLE_RETRY_MAX_ATTEMPTS } from './handle.js';
 
 const PROTOCOL_VERSION = '2';
 // Plugin build version. Keep in sync with plugin/.claude-plugin/plugin.json
 // (there's a memory rule about this). Sent on every request so the relay
 // can log skew and the user can see it in any error message.
-const PLUGIN_VERSION = '1.3.3';
+const PLUGIN_VERSION = '1.3.4';
 
 // Latest relay versions observed on the current connection (populated from
 // the `registered` message and from HTTP response headers). Used to build
@@ -436,7 +437,10 @@ async function beginLogin(
   email: string,
   h: string,
   publicKey: string,
-): Promise<{ ok: true; pendingId: string; emailHint: string } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; pendingId: string; emailHint: string }
+  | { ok: false; error: string; status?: number }
+> {
   try {
     const resp = await relayFetch(`${httpBase}/login`, {
       method: 'POST',
@@ -445,7 +449,7 @@ async function beginLogin(
     });
     const data = await resp.json() as { pending_id?: string; email_hint?: string; error?: string };
     if (!resp.ok || !data.pending_id) {
-      return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
+      return { ok: false, status: resp.status, error: data.error ?? `HTTP ${resp.status}` };
     }
     return { ok: true, pendingId: data.pending_id, emailHint: data.email_hint ?? email };
   } catch (err: any) {
@@ -590,19 +594,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const args = req.params.arguments as { email: string };
     const email = args.email;
 
-    // Derive handle from email: strip domain, remove special chars, prefix with @
-    const h = `@${email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}`;
+    const baseHandle = deriveBaseHandle(email);
 
-    // Already have a saved token for this handle? Verify it against the relay.
+    // Already have a saved token for this base handle? Verify it against
+    // the relay. (Users whose base collided and were assigned @baseN will
+    // not hit this fast-path — they'll fall through and the retry loop
+    // below will land on their @baseN again since their email matches.)
     const existing = loadAuth();
-    if (existing && existing.handle === h && existing.token) {
+    if (existing && existing.handle === baseHandle && existing.token) {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        return { content: [{ type: 'text', text: `Already connected as ${h}.` }] };
+        return { content: [{ type: 'text', text: `Already connected as ${baseHandle}.` }] };
       }
-      handle = h;
+      handle = baseHandle;
       const connected = await connectRelay();
       if (connected) {
-        return { content: [{ type: 'text', text: `Logged in as ${h}.` }] };
+        return { content: [{ type: 'text', text: `Logged in as ${baseHandle}.` }] };
       }
       // Token was rejected — fall through to fresh login
     }
@@ -611,15 +617,45 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     // bound to the identity at email-verification time on the relay; the
     // secret half stays in auth.json.
     const keypair = generateKeypair();
-    const result = await beginLogin(email, h, keypair.publicKey);
-    if (!result.ok) {
-      return { content: [{ type: 'text', text: `Failed to start login: ${result.error}` }] };
+
+    // Try base handle, then base2, base3, … up to N attempts. On 409 (the
+    // handle is registered to a different email) we bump the suffix and
+    // retry. Any other non-OK response stops the loop immediately.
+    let lastResult: Awaited<ReturnType<typeof beginLogin>> | null = null;
+    let assignedHandle = baseHandle;
+    for (let attempt = 1; attempt <= HANDLE_RETRY_MAX_ATTEMPTS; attempt++) {
+      assignedHandle = handleVariant(baseHandle, attempt);
+      lastResult = await beginLogin(email, assignedHandle, keypair.publicKey);
+      if (lastResult.ok) break;
+      if (lastResult.status !== 409) break;
     }
-    pollLoginStatus(result.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+
+    if (!lastResult || !lastResult.ok) {
+      if (lastResult && lastResult.status === 409) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Handle ${baseHandle} and ${HANDLE_RETRY_MAX_ATTEMPTS - 1} numbered variants are all registered to other emails. Try a different email local-part.`,
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: `Failed to start login: ${lastResult?.error ?? 'unknown error'}`,
+        }],
+      };
+    }
+
+    pollLoginStatus(lastResult.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+
+    const collisionNote = assignedHandle !== baseHandle
+      ? ` (${baseHandle} was taken; you'll be registered as ${assignedHandle})`
+      : '';
     return {
       content: [{
         type: 'text',
-        text: `Check your email at ${result.emailHint} and click the verification link to complete login.`,
+        text: `Check your email at ${lastResult.emailHint} and click the verification link to complete login${collisionNote}.`,
       }],
     };
   }

@@ -26817,11 +26817,21 @@ function decryptFrom(peerPubkeyB64, mySecretKeyB64, nonceB64, ciphertextB64) {
   return import_tweetnacl_util.default.encodeUTF8(plain);
 }
 
+// channel/handle.ts
+function deriveBaseHandle(email3) {
+  return `@${email3.split("@")[0].replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`;
+}
+function handleVariant(base, attempt) {
+  if (attempt <= 1) return base;
+  return `${base}${attempt}`;
+}
+var HANDLE_RETRY_MAX_ATTEMPTS = 10;
+
 // channel/node.ts
 var import_fs3 = require("fs");
 var import_meta = {};
 var PROTOCOL_VERSION = "2";
-var PLUGIN_VERSION = "1.3.3";
+var PLUGIN_VERSION = "1.3.4";
 var lastSeenRelayProto = null;
 var lastSeenRelayBuild = null;
 var CLIENT_VERSION_HEADERS = {
@@ -27169,7 +27179,7 @@ async function beginLogin(email3, h, publicKey) {
     });
     const data = await resp.json();
     if (!resp.ok || !data.pending_id) {
-      return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
+      return { ok: false, status: resp.status, error: data.error ?? `HTTP ${resp.status}` };
     }
     return { ok: true, pendingId: data.pending_id, emailHint: data.email_hint ?? email3 };
   } catch (err) {
@@ -27305,28 +27315,49 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "talk_set_handle") {
     const args = req.params.arguments;
     const email3 = args.email;
-    const h = `@${email3.split("@")[0].replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`;
+    const baseHandle = deriveBaseHandle(email3);
     const existing = loadAuth();
-    if (existing && existing.handle === h && existing.token) {
+    if (existing && existing.handle === baseHandle && existing.token) {
       if (ws && ws.readyState === wrapper_default.OPEN) {
-        return { content: [{ type: "text", text: `Already connected as ${h}.` }] };
+        return { content: [{ type: "text", text: `Already connected as ${baseHandle}.` }] };
       }
-      handle = h;
+      handle = baseHandle;
       const connected = await connectRelay();
       if (connected) {
-        return { content: [{ type: "text", text: `Logged in as ${h}.` }] };
+        return { content: [{ type: "text", text: `Logged in as ${baseHandle}.` }] };
       }
     }
     const keypair = generateKeypair();
-    const result = await beginLogin(email3, h, keypair.publicKey);
-    if (!result.ok) {
-      return { content: [{ type: "text", text: `Failed to start login: ${result.error}` }] };
+    let lastResult = null;
+    let assignedHandle = baseHandle;
+    for (let attempt = 1; attempt <= HANDLE_RETRY_MAX_ATTEMPTS; attempt++) {
+      assignedHandle = handleVariant(baseHandle, attempt);
+      lastResult = await beginLogin(email3, assignedHandle, keypair.publicKey);
+      if (lastResult.ok) break;
+      if (lastResult.status !== 409) break;
     }
-    pollLoginStatus(result.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+    if (!lastResult || !lastResult.ok) {
+      if (lastResult && lastResult.status === 409) {
+        return {
+          content: [{
+            type: "text",
+            text: `Handle ${baseHandle} and ${HANDLE_RETRY_MAX_ATTEMPTS - 1} numbered variants are all registered to other emails. Try a different email local-part.`
+          }]
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `Failed to start login: ${lastResult?.error ?? "unknown error"}`
+        }]
+      };
+    }
+    pollLoginStatus(lastResult.pendingId, keypair).catch((err) => log(`login poll crashed: ${err.message}`));
+    const collisionNote = assignedHandle !== baseHandle ? ` (${baseHandle} was taken; you'll be registered as ${assignedHandle})` : "";
     return {
       content: [{
         type: "text",
-        text: `Check your email at ${result.emailHint} and click the verification link to complete login.`
+        text: `Check your email at ${lastResult.emailHint} and click the verification link to complete login${collisionNote}.`
       }]
     };
   }
