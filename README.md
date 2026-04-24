@@ -81,23 +81,7 @@ The plugin exposes seven MCP tools:
 - Every action requires your approval via Claude Code's permission prompts.
 - **One live session per handle.** When a second session logs in as the same handle, the relay politely closes the old one with an explanatory message. No silent zombies.
 - **Version-aware errors.** Every response advertises the relay's version; any plumbing error message names both sides' versions so you can tell whether the plugin or the relay is out of date.
-
-### Self-hosting
-
-The relay is a single Cloudflare Worker plus a Durable Object — the whole server is ~700 lines of TypeScript. Deploy it to your own Cloudflare account and point the plugin at your instance via `TALKATIVE_RELAY_URL`:
-
-```
-TALKATIVE_RELAY_URL=wss://talkative-relay.your-team.workers.dev
-```
-
-Why you'd want to:
-
-- **Your data stays on your infra.** The relay only sees ciphertext and routing metadata; nothing sensitive ever leaves your Cloudflare account.
-- **No per-message costs.** Cloudflare Workers' flat subscription covers the traffic for a normal team's usage — no API metering per query.
-- **Corporate controls.** Ingress can be gated by Cloudflare Access, IP allowlist, or a private tunnel. Administrator endpoint lets you revoke all tokens and kick all connected peers in one call.
-- **Audit trail.** `wrangler tail` streams every message envelope (handle-to-handle routing, no plaintext), which you can ship to your existing logging stack.
-
-Full step-by-step guide: [`SELF_HOSTING.md`](https://github.com/Buzzie-AI/talkative-relay/blob/main/SELF_HOSTING.md).
+- **Enterprise deployments.** Dedicated private relay, SSO, audit export, and on-premises options are available on the Team tier — see [pricing](https://buzzie-ai.github.io/talkative/#pricing) or email <arvind.raj.naidu@gmail.com>.
 
 ### Development
 
