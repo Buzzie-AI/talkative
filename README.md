@@ -29,7 +29,7 @@ Inside Claude Code:
 Then quit Claude Code and relaunch it with the development channels flag so inbound peer messages can be pushed into your session:
 
 ```bash
-claude --dangerously-load-development-channels server:network
+claude --dangerously-load-development-channels server:plugin:talkative:network
 ```
 
 > The channel mechanism that delivers peer messages is still experimental, so the flag is required. Without it, `talk_send` and `talk_peers` still work, but you will not *receive* anything from other peers. This restriction will be removed once the feature graduates out of experimental.
@@ -103,7 +103,7 @@ Full step-by-step guide: [`SELF_HOSTING.md`](https://github.com/Buzzie-AI/talkat
 
 ```bash
 # Test the plugin locally
-claude --plugin-dir ./plugin --dangerously-load-development-channels server:network
+claude --plugin-dir ./plugin --dangerously-load-development-channels server:plugin:talkative:network
 
 # Rebuild the plugin bundle after code changes
 npm run build:plugin
