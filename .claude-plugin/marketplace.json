@@ -18,6 +18,15 @@
       "source": "./hawk-plugin",
       "description": "Connect Claude Code to Hawk — QuickBooks-powered AI for invoices, customers, and business data.",
       "version": "1.0.0"
+    },
+    {
+      "name": "whatsapp",
+      "source": {
+        "source": "github",
+        "repo": "Buzzie-AI/whatsapp-plugin"
+      },
+      "description": "WhatsApp channel for Claude Code — receive messages and reply through your linked WhatsApp account using @buzzie-ai/whatsapp-channel (Baileys).",
+      "version": "0.0.1"
     }
   ]
 }
